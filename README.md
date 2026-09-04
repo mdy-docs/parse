@@ -49,20 +49,25 @@ two orders of magnitude on this stage.
 `make compare` builds both and diffs them:
 
 ```
-  84/87 documents byte-identical
-  284866 nodes against the JavaScript's 284872 (100%)
-  85/87 documents with identical text
-  20676 of the JavaScript's 20681 unist positions match (100.0%)
+  87/87 documents byte-identical
+  284872 nodes against the JavaScript's 284872
+  87/87 documents with identical text
+  20681 of the JavaScript's 20681 unist positions
   10514/10514 URL inputs agree with linkify-it exactly
 ```
+
+**Every document, every node, every position.** The corpus is 87 Wikipedia
+articles, 6.5 MB, and `make compare` diffs both implementations document by
+document.
 
 Whole-document equality is a hard bar for a 70 KB Wikipedia article — one rule
 missing anywhere makes the whole document differ.
 
-**The three that still differ are three separate one-offs**, and `make compare`
-names each: `byblos` (a property inside one list), `macedonia` (two leading
-spaces kept by the JavaScript), `miletus` (one footnote numbered 27 against
-30). Not a class of thing left undone.
+The last of them took a fix on the JavaScript side rather than this one:
+mdy-docs numbered footnotes in the order the PARSER met them, and a paragraph
+followed directly by a list has the list built first — so a reader saw markers
+run 30 31 32 … 27 28 29. Numbering now happens once the tree is built, which is
+the only place reading order exists. Fixed upstream; this never replicated it.
 
 ## URLs are linkify-it, ported
 

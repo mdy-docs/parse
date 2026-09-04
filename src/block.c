@@ -213,6 +213,18 @@ static void set_heading_id(mdy_doc *doc, mdy_node *h, const char *text, size_t l
  * it inside the paragraph above and shifted every footnote number after it.
  * `1931.x` is not a marker, because something that is not a space follows.
  */
+/** The number an ordered marker carries, or 0 for a bullet. Only meaningful
+ * when list_marker returned non-zero. */
+static long marker_number(const mdy_line *l) {
+    long value = 0;
+    size_t i = 0;
+    while (i < l->len && l->text[i] >= '0' && l->text[i] <= '9') {
+        value = value * 10 + (l->text[i] - '0');
+        i++;
+    }
+    return i ? value : -1;
+}
+
 static size_t list_marker(const mdy_line *l, int *ordered) {
     if (l->len < 1) return 0;
     char c = l->text[0];
@@ -730,6 +742,15 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
         if (marker) {
             size_t start_line = i;
             mdy_node *list = mdy_new_element(doc, ordered ? "ol" : "ul", 2);
+            /*
+             * An ordered list that does not begin at 1 says so — `1931.` gives
+             * `<ol start="1931">`, which is what makes the rendered numbering
+             * match what the author wrote. One is the default and is left off.
+             */
+            if (ordered) {
+                long first = marker_number(l);
+                if (first >= 0 && first != 1) mdy_set_number(doc, list, "start", (double)first);
+            }
             mdy_append(list, mdy_new_text(doc, "\n", 1));
             int any_task = 0;
 

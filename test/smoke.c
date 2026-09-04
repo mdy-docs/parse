@@ -318,6 +318,17 @@ int main(void) {
     check("_ before a scheme is not a link", "a _http://x.com b",
           ROOT(EL("p", "", TX("a _http:") "," EL("em", "", TX("x.com b")))), &o);
 
+    printf("--- mdyast: ordered list start ---\n");
+    /* A marker may be followed by the END OF THE LINE, and an ordered list
+     * that does not begin at 1 records where it does. */
+    check("1931. alone is a marker, and sets start", "1931.\nx",
+          ROOT(EL("ol", "\"start\":1931", TX("\\n") ","
+                  EL("li", "", TX(" x")) "," TX("\\n"))), &o);
+    check("…and 1 is the default, so it is left off", "1. a",
+          ROOT(EL("ol", "", TX("\\n") "," EL("li", "", TX("a")) "," TX("\\n"))), &o);
+    check("a continuation needs no indentation", "- one\ntwo",
+          ROOT(EL("ul", "", TX("\\n") "," EL("li", "", TX("one two")) "," TX("\\n"))), &o);
+
     printf("--- mdyast: loose and tight lists ---\n");
     check("a blank line between items makes the list loose", "- a\n\n- b",
           ROOT(EL("ul", "", TX("\\n") ","
