@@ -66,10 +66,11 @@ int mdy_is_letter_or_number_cp(uint32_t cp) {
  * that changes a string's length changes every offset after it and no document
  * in reach needs one.
  *
- * Worth knowing while reading this: lamassu's own `toLowerCase` is ASCII-only.
- * That is not what this has to match — defaultResolve runs in the HOST engine,
- * not in the sandbox — but it does mean a template lowercasing a non-ASCII
- * string inside the VM and the same call outside it disagree.
+ * lamassu's own `toLowerCase` was ASCII-only when this was written, which
+ * would have meant the same call inside and outside the sandbox disagreeing on
+ * any non-ASCII string. That was a bug rather than a boundary and it is fixed
+ * upstream (lamassu e38fcf9), over these same UCD tables — so the sandbox and
+ * the host now answer alike.
  */
 uint32_t mdy_lower_cp(uint32_t cp) {
     if (cp < 0x80) return (cp >= 'A' && cp <= 'Z') ? cp + 32 : cp;
