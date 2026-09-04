@@ -43,10 +43,18 @@ void mdy_append(mdy_node *parent, mdy_node *child) {
 }
 
 static mdy_prop *new_prop(mdy_doc *doc, mdy_node *el, const char *name) {
+    /* `properties` is an OBJECT, so a repeated name replaces rather than
+     * appends — emitting it twice produced JSON with a duplicate key, which is
+     * not the same thing at all. */
+    const char *interned = mdy_intern(&doc->arena, &doc->names, name, strlen(name));
+    for (mdy_prop *q = el->props; q; q = q->next) {
+        if (q->name == interned) { q->list = NULL; q->list_len = 0; return q; }
+    }
+
     mdy_prop *p = mdy_alloc(&doc->arena, sizeof *p);
     if (!p) return NULL;
     memset(p, 0, sizeof *p);
-    p->name = mdy_intern(&doc->arena, &doc->names, name, strlen(name));
+    p->name = interned;
     if (el->props_tail) el->props_tail->next = p;
     else el->props = p;
     el->props_tail = p;

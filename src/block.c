@@ -257,9 +257,25 @@ static size_t list_marker(const mdy_line *l, int *ordered) {
  * blocks. Indentation is structural in MDY, so "under it" means strictly more
  * indented, and the element closes as soon as the indentation comes back.
  */
-static int is_name_char(char c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-           c == '-' || c == '_' || c == ':';
+/*
+ * The name patterns from ../../src/parse/html.js: a tag is a letter then
+ * letters, digits and hyphens; an attribute is a letter, underscore or colon
+ * then letters, digits, dots, underscores, colons and hyphens.
+ *
+ * Both must START with a letter, and that is the part worth having: it is what
+ * stops the `--` of `<!-- a comment -->` from being read as an attribute
+ * called `--`.
+ */
+static int is_tag_start(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+static int is_tag_char(char c) {
+    return is_tag_start(c) || (c >= '0' && c <= '9') || c == '-';
+}
+static int is_attr_start(char c) { return is_tag_start(c) || c == '_' || c == ':'; }
+static int is_attr_char(char c) {
+    return is_tag_start(c) || (c >= '0' && c <= '9') ||
+           c == '.' || c == '_' || c == ':' || c == '-';
 }
 
 /** How far the element opened on line `i` extends: the first line at or below
@@ -297,7 +313,10 @@ static void parse_attributes(mdy_doc *doc, mdy_node *el, const char *tag,
         }
 
         size_t start = i;
-        while (i < len && is_name_char(p[i])) i++;
+        if (is_attr_start(p[i])) {
+            i++;
+            while (i < len && is_attr_char(p[i])) i++;
+        }
         if (i == start) { i++; continue; }        /* not a name — skip the byte */
         const char *name = p + start;
         size_t name_len = i - start;
@@ -392,7 +411,10 @@ static size_t parse_element(mdy_doc *doc, mdy_node *parent,
     }
 
     size_t n = 1;                       /* past the `<` */
-    while (n < l->len && is_name_char(l->text[n])) n++;
+    if (n < l->len && is_tag_start(l->text[n])) {
+        n++;
+        while (n < l->len && is_tag_char(l->text[n])) n++;
+    }
 
     char tag[64];
     size_t tag_len = n - 1;
