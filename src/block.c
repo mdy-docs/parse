@@ -572,11 +572,37 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
             while (j > i && lines[j - 1].blank) j--;
 
             size_t inner = lines[i].indent;
-            mdy_node *div = mdy_new_element(doc, "div", 3);
-            mdy_parse_block(doc, div, lines + i, j - i, inner);
-            mdy_set_position(div, lines, i, j > i ? j - 1 : i);
+            for (size_t k = i; k < j; k++)
+                if (!lines[k].blank && lines[k].indent < inner) inner = lines[k].indent;
+
+            /*
+             * EVERY TWO COLUMNS IS ONE LEVEL. The grammar says so in as many
+             * words, and it means an indent of eight is FOUR nested <div>s
+             * rather than one deep-indented one. Making a single div for any
+             * depth looks right in a two-space document and is wrong in every
+             * other: the corpus has eight-column indents that come out four
+             * levels deep.
+             */
+            size_t levels = (inner - base) / 2;
+            if (levels == 0) levels = 1;
+
+            mdy_node *outer = NULL, *innermost = NULL;
+            for (size_t d = 0; d < levels; d++) {
+                mdy_node *div = mdy_new_element(doc, "div", 3);
+                mdy_set_position(div, lines, i, j > i ? j - 1 : i);
+                if (innermost) {
+                    mdy_append(innermost, mdy_new_text(doc, "\n", 1));
+                    mdy_append(innermost, div);
+                    mdy_append(innermost, mdy_new_text(doc, "\n", 1));
+                } else {
+                    outer = div;
+                }
+                innermost = div;
+            }
+            mdy_parse_block(doc, innermost, lines + i, j - i, base + levels * 2);
+
             separate(doc, parent);
-            mdy_append(parent, div);
+            mdy_append(parent, outer);
             produced = 1;
             i = j;
             continue;
@@ -701,9 +727,46 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
             mdy_append(list, mdy_new_text(doc, "\n", 1));
             int any_task = 0;
 
+            /*
+             * LOOSE OR TIGHT. A blank line between items does not end the
+             * list — it makes it loose, and every item then wraps its content
+             * in a <p> rather than holding it inline. That is one decision for
+             * the whole list, so it has to be made before any item is built.
+             */
+            int loose = 0;
+            {
+                size_t scan = i;
+                int seen_blank = 0;
+                while (scan < count) {
+                    if (lines[scan].blank) { seen_blank = 1; scan++; continue; }
+                    int k_ordered = 0;
+                    size_t k_width = list_marker(&lines[scan], &k_ordered);
+                    if (k_width && k_ordered == ordered && lines[scan].indent == l->indent) {
+                        if (seen_blank) { loose = 1; break; }
+                        scan++;
+                        continue;
+                    }
+                    if (lines[scan].indent > l->indent) { scan++; continue; }
+                    break;
+                }
+            }
+
             while (i < count) {
+                /* Skip blank lines BETWEEN items — in a loose list they
+                 * separate items rather than ending the list. */
+                if (lines[i].blank) {
+                    size_t peek = i;
+                    while (peek < count && lines[peek].blank) peek++;
+                    int p_ordered = 0;
+                    if (peek < count && list_marker(&lines[peek], &p_ordered) &&
+                        p_ordered == ordered && lines[peek].indent == l->indent) {
+                        i = peek;
+                        continue;
+                    }
+                    break;
+                }
                 int this_ordered = 0;
-                size_t width = lines[i].blank ? 0 : list_marker(&lines[i], &this_ordered);
+                size_t width = list_marker(&lines[i], &this_ordered);
                 if (!width || this_ordered != ordered || lines[i].indent != l->indent) break;
 
                 /*
@@ -768,7 +831,17 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
                     o += lines[k].len;
                 }
                 joined[o] = '\0';
-                mdy_parse_inline(doc, item, joined, o);
+                if (loose) {
+                    /* `li("\n" p(content) "\n")` — the shape a blank line
+                     * between items produces. */
+                    mdy_node *wrap = mdy_new_element(doc, "p", 1);
+                    mdy_parse_inline(doc, wrap, joined, o);
+                    mdy_append(item, mdy_new_text(doc, "\n", 1));
+                    mdy_append(item, wrap);
+                    mdy_append(item, mdy_new_text(doc, "\n", 1));
+                } else {
+                    mdy_parse_inline(doc, item, joined, o);
+                }
 
                 if (item_end > plain_end) {
                     size_t inner = lines[plain_end].indent;

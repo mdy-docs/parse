@@ -49,34 +49,34 @@ two orders of magnitude on this stage.
 `make compare` builds both and diffs them:
 
 ```
-  79/87 documents byte-identical
-  284844 nodes against the JavaScript's 284872 (100%)
-  80/87 documents with identical text
-  20675 of the JavaScript's 20681 unist positions match (100.0%)
+  84/87 documents byte-identical
+  284866 nodes against the JavaScript's 284872 (100%)
+  85/87 documents with identical text
+  20676 of the JavaScript's 20681 unist positions match (100.0%)
+  10514/10514 URL inputs agree with linkify-it exactly
 ```
 
 Whole-document equality is a hard bar for a 70 KB Wikipedia article — one rule
 missing anywhere makes the whole document differ.
 
-**The eight that still differ are eight separate one-offs**, not a class of
-thing left undone, and `make compare` names each. In full, because "90%" hides
-more than it says:
+**The three that still differ are three separate one-offs**, and `make compare`
+names each: `byblos` (a property inside one list), `macedonia` (two leading
+spaces kept by the JavaScript), `miletus` (one footnote numbered 27 against
+30). Not a class of thing left undone.
 
-| document | what differs |
-| --- | --- |
-| larsa, thoth | linkify's trailing-punctuation trim. It keeps the comma in `//UD.UNUG^^KI^^//,` and stops before the `)` in `//j3ḥ-ḏḥw.ty)//`; this trims one and keeps the other. |
-| masada | one `<div>` where a paragraph was made — the indentation rule, on a shape not yet worked out. |
-| miletus | one footnote numbered 27 against 30, so a reference is being counted somewhere it should not be. |
-| memphis-egypt | one extra text node, `//-www.behindthename.com`, from a URL boundary. |
-| macedonia | two leading spaces kept by the JavaScript and trimmed here. |
-| byblos | an element where the JavaScript has text. |
-| nineveh | one `<em>` that should be an `<a>` — another URL boundary. |
+## URLs are linkify-it, ported
 
-Five of the eight are the same underlying thing: **linkify-it's URL
-boundaries**. That library is a state machine with a TLD list and a page of
-punctuation heuristics, and this implements the parts a real corpus exercises
-— a dot with something on each side, no hyphen in the last label, a trailing
-dot trimmed — which is enough for 49,211 links and not for all of them.
+Every URL boundary is linkify-it's, because none of them is a rule anyone
+guesses. `make check-links` runs both implementations over every line of the
+corpus that could hold a link plus 48 edge cases aimed at the conditional
+alternatives in its path grammar:
+
+```
+  10514/10514 inputs agree (100.0%)
+```
+
+See [src/linkify.c](src/linkify.c) for what the port covers and, more usefully,
+why compiling linkify's own regexes was tried first and abandoned.
 
 ## What it does today
 

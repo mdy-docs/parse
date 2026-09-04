@@ -11,7 +11,7 @@ CC      ?= cc
 AR      ?= ar
 CFLAGS  += -std=c11 -Wall -Wextra -Wshadow -O2 -g -Iinclude -Isrc -Ithird_party/baru-re/include
 
-SRCS := src/arena.c src/ast.c src/attrs.c src/unicode.c src/emoji.c src/footnote.c src/inline.c src/block.c
+SRCS := src/arena.c src/ast.c src/attrs.c src/unicode.c src/linkify.c src/emoji.c src/footnote.c src/inline.c src/block.c
 OBJS := $(patsubst src/%.c,build/%.o,$(SRCS))
 
 # Where mdy-docs lives, for the comparison harness. Nothing in the library
@@ -31,6 +31,16 @@ build/libmdyast.a: $(OBJS)
 build/mdyast: src/main.c build/libmdyast.a
 	$(CC) $(CFLAGS) src/main.c build/libmdyast.a -o $@
 
+build/linkify: test/linkify.c build/libmdyast.a
+	@mkdir -p build
+	$(CC) $(CFLAGS) test/linkify.c build/libmdyast.a -o $@
+
+# Does the URL matching agree with linkify-it? Its rules are nobody's guess, so
+# agreement is measured rather than assumed — see src/linkify.c.
+.PHONY: check-links
+check-links: build/linkify
+	@node test/linkify.mjs --mdy-docs "$(MDY_DOCS)" --corpus "$(CORPUS)"
+
 build/smoke: test/smoke.c build/libmdyast.a
 	@mkdir -p build
 	$(CC) $(CFLAGS) test/smoke.c build/libmdyast.a -o $@
@@ -39,7 +49,7 @@ build/smoke: test/smoke.c build/libmdyast.a
 # build/mdyast too, though the checks do not use it: every probe reached for it
 # by hand at some point, found yesterday's binary, and reported a bug that had
 # already been fixed. Building it here costs a second and stops that.
-test: build/smoke build/mdyast
+test: build/smoke build/mdyast build/linkify
 	@./build/smoke
 
 # The check that actually matters. A 4,441-line parser is not ported by

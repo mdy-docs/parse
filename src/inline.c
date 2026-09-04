@@ -53,131 +53,14 @@ static const Marker *marker_at(const char *p, size_t left) {
 /* ---- autolink ------------------------------------------------------------ */
 
 /*
- * Where a URL begins. A scheme, or the `//host` of a protocol-relative one —
- * mdy-docs uses linkify-it, and `//host` is a case it catches that is easy to
- * miss.
- *
- * It is not a curiosity in this corpus: `//TravellersinEgypt.org//` is a
- * protocol-relative link, and reading it as an emphasis marker instead
- * produced 199 spurious <em> — the single largest remaining difference at the
- * time. A `//` followed by something host-shaped is a URL; a `//` followed by
- * prose is a marker.
+ * URL detection is linkify-it's, ported in src/linkify.c, and none of it is
+ * here any more. What used to be here was a reasonable-looking guess — a
+ * scheme or `//host`, then bytes until whitespace, then trailing punctuation
+ * trimmed — and it was wrong in five documents in ways nobody would predict:
+ * a comma kept in one place and dropped in another, a hyphen in a host's last
+ * label, a full stop at the end of a sentence versus one inside a path.
  */
-static int host_length(const char *p, size_t left) {
-    size_t n = 0, dots = 0;
-    size_t label_start = 0;      /* where the current label began */
-    size_t last_dot = 0;         /* the position of the most recent dot */
-    int label_hyphen = 0;        /* whether the current label holds one */
-    int prev_label_hyphen = 0;   /* …and whether the one before it did */
 
-    while (n < left) {
-        char c = p[n];
-        if (c == '.') {
-            if (n == label_start) break;   /* two dots running, or a leading one */
-            dots++;
-            last_dot = n;
-            n++;
-            label_start = n;
-            prev_label_hyphen = label_hyphen;
-            label_hyphen = 0;
-            continue;
-        }
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
-            n++;
-            continue;
-        }
-        if (c == '-') { label_hyphen = 1; n++; continue; }
-        if ((unsigned char)c >= 0x80) {
-            /* A host may hold any letter — `//ḥw.t//` is a link in this corpus
-             * — so the whole character is consumed, not its lead byte. */
-            uint32_t cp;
-            size_t width = mdy_utf8_decode(p + n, left - n, &cp);
-            if (!mdy_is_letter_or_number_cp(cp)) break;
-            n += width;
-            continue;
-        }
-        break;
-    }
-
-    if (dots == 0) return 0;
-
-    /*
-     * The rules linkify actually applies, worked out by asking it rather than
-     * by reading it, because both are surprising:
-     *
-     *   A TRAILING DOT is not part of the host — `//E.J. Brill` links `//E.J`,
-     *   which is how a sentence's full stop stays out of the URL.
-     *
-     *   THE LAST LABEL MAY NOT CONTAIN A HYPHEN. `//a.bc//` is a link and
-     *   `//a.b-c//` is not, which is what makes `//ḥw.t-k3-Ptḥ//` emphasis
-     *   while `//wꜣs.t//` is a link. There is no TLD list involved — a
-     *   one-character last label is fine — so this is the only thing standing
-     *   between a transliteration and a URL.
-     */
-    if (n == label_start) {
-        /*
-         * Ended on a dot. What comes before it is the host — but only if that
-         * is still a host in its own right: it needs a dot of its own, and its
-         * own last label must not hold a hyphen. `//E.J.` gives `//E.J`;
-         * `//word.` gives nothing, because `word` has no dot in it.
-         */
-        if (dots < 2 || prev_label_hyphen) return 0;
-        return (int)last_dot;
-    }
-    if (label_hyphen) return 0;
-    return (int)n;
-}
-
-static int is_url_start(const char *p, size_t left) {
-    if (left >= 8 && memcmp(p, "https://", 8) == 0) return 1;
-    if (left >= 7 && memcmp(p, "http://", 7) == 0) return 1;
-    if (left >= 5 && p[0] == '/' && p[1] == '/') return host_length(p + 2, left - 2) > 0;
-    return 0;
-}
-
-/*
- * Where a bare URL ends. Trailing punctuation is excluded, because a URL at
- * the end of a sentence is followed by a full stop that is not part of it —
- * and a closing bracket only counts if an opening one was inside.
- */
-static size_t url_length(const char *p, size_t left) {
-    size_t n = 0;
-    while (n < left) {
-        unsigned char c = (unsigned char)p[n];
-        /* A bracket ends it: `//host//,[[ Ur ]]` is a URL and then a wiki
-         * link, and swallowing the `[[` made the href nonsense and lost the
-         * link. */
-        if (c <= ' ' || c == '<' || c == '>' || c == '"' || c == '[' || c == ']') break;
-        n++;
-    }
-    while (n > 0) {
-        char c = p[n - 1];
-        if (c == '.' || c == ',' || c == ';' || c == ':' || c == '!' || c == '?') { n--; continue; }
-        if (c == ')') {
-            int opens = 0;
-            for (size_t i = 0; i < n; i++) { if (p[i] == '(') opens++; else if (p[i] == ')') opens--; }
-            if (opens < 0) { n--; continue; }
-        }
-        break;
-    }
-    return n;
-}
-
-/* ---- wiki links ---------------------------------------------------------- */
-
-/*
- * `[[ label ]]` and `[[ label | url ]]`.
- *
- * A bare label resolves to its own slug — `[[ Seti I ]]` links to `seti-i` —
- * which is mdy-docs' defaultResolve. A `|` splits label from target and the
- * spaces around it are optional.
- *
- * A label beginning with `^` is NOT this: it is a footnote reference, and
- * whether it becomes one depends on a definition appearing elsewhere in the
- * document. That is a whole-document pass rather than an inline rule, so this
- * leaves such spans alone — which is also what the JavaScript does when the
- * definition is missing.
- */
 /* ---- the scanner --------------------------------------------------------- */
 
 /*
@@ -466,8 +349,14 @@ static void scan(Ctx *ctx, const char *text, size_t len) {
             }
         }
 
-        if (ctx->doc->options.autolink && is_url_start(p, left)) {
-            size_t n = url_length(p, left);
+        /* A link starts here if the pre-scan said so — one decision, made
+         * once by the port, rather than the same question asked twice. */
+        {
+            size_t n = 0;
+            for (size_t k = 0; k < ctx->url_count; k++) {
+                if (ctx->urls[k].start == i) { n = ctx->urls[k].end - i; break; }
+                if (ctx->urls[k].start > i) break;
+            }
             if (n > 0) {
                 flush(ctx);
                 mdy_node *a = mdy_new_element(ctx->doc, "a", 1);
@@ -495,14 +384,12 @@ void mdy_parse_inline(mdy_doc *doc, mdy_node *parent, const char *text, size_t l
     Span urls[MDY_MAX_URLS];
     size_t url_count = 0;
     if (doc->options.autolink) {
-        for (size_t i = 0; i < len && url_count < MDY_MAX_URLS; i++) {
-            if (!is_url_start(text + i, len - i)) continue;
-            size_t n = url_length(text + i, len - i);
-            if (n == 0) continue;
-            urls[url_count].start = i;
-            urls[url_count].end = i + n;
+        mdy_link found[MDY_MAX_URLS];
+        size_t n = mdy_find_links(text, len, found, MDY_MAX_URLS);
+        for (size_t k = 0; k < n; k++) {
+            urls[url_count].start = found[k].start;
+            urls[url_count].end = found[k].end;
             url_count++;
-            i += n - 1;
         }
     }
 

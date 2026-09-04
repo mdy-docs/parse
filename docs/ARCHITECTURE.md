@@ -158,6 +158,43 @@ counts is wrong on exactly those characters, which is why they are what the
 tests use — along with an unpaired surrogate, which cannot be encoded at all
 and becomes U+FFFD rather than failing the document.
 
+## URLs
+
+`src/linkify.c` — a port of linkify-it, which is what mdy-docs uses.
+
+**Why a port and not a heuristic.** Five of the eight documents that once
+differed came down to URL boundaries, and each time the hand-rolled rule was
+"close": a trailing comma kept in one place and dropped in another, a hyphen in
+a host's last label, a full stop ending a sentence versus one inside a path.
+Those are not rules anyone guesses.
+
+**Why not its regexes.** The obvious route is to compile linkify's own patterns
+with baru-re, which lamassu already links and which speaks the dialect they
+need. It does not work, and it is worth writing down why so nobody spends the
+afternoon: the patterns inline the Unicode classes rather than using `\p{...}`,
+so `http_validator` alone is 31 KB and wants ~460 character classes against
+baru-re's `MAX_CLASSES` of 256. Raising that limit segfaults. Measured, then
+reverted.
+
+That inlining is also what makes the C port *small*. Those 31 KB are `Z`, `P`
+and `Cc` written out longhand; here they are three table lookups, and what is
+left is the grammar — a few hundred lines.
+
+**What it covers** is what `new LinkifyIt()` does with no options, which is
+what mdy-docs constructs. The most useful thing to know about that default is
+that **`fuzzyLink` is false**: a bare `example.com` is not a link, which takes
+the TLD list out of everything except fuzzy email.
+
+The path grammar is where the boundaries live, and its alternatives are
+conditional on purpose: `,` and `;` continue a path only when something
+follows, `.` only when what follows is neither another dot nor the end, `!` and
+`?` only when not doubled. That is what leaves the full stop out of
+"see http://example.com." while keeping the comma inside "http://x.com/a,b".
+
+`make check-links` diffs the two implementations over every line of the corpus
+that could hold a link, plus edge cases aimed at each conditional alternative.
+It reports 10514/10514.
+
 ## Positions
 
 unist positions, on block elements only — inline ones do not carry them, nor

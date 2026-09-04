@@ -294,6 +294,44 @@ int main(void) {
           ROOT(EL("p", "", EL("a", "\"href\":\"kazimierz-micha\xc5\x82owski\"",
                               TX("Kazimierz Micha\xc5\x81owski")))), &o);
 
+    printf("--- mdyast: links (the linkify-it port) ---\n");
+    /* The conditional path rules, which are the whole reason for the port: a
+     * full stop ending a sentence is not part of the URL, and a comma with
+     * something after it is. */
+    check("a trailing full stop is not in the URL", "see http://x.com.",
+          ROOT(EL("p", "", TX("see ") ","
+                  EL("a", "\"href\":\"http://x.com\"", TX("http://x.com")) "," TX("."))), &o);
+    check("a comma inside a path is", "at http://x.com/a,b end",
+          ROOT(EL("p", "", TX("at ") ","
+                  EL("a", "\"href\":\"http://x.com/a,b\"", TX("http://x.com/a,b")) ","
+                  TX(" end"))), &o);
+    /* A protocol-relative URL needs a dotted host; `//word` is emphasis. */
+    check("//host is a link", "x //example.com/p y",
+          ROOT(EL("p", "", TX("x ") ","
+                  EL("a", "\"href\":\"//example.com/p\"", TX("//example.com/p")) "," TX(" y"))), &o);
+    check("…and a hyphen in the last label is not", "x //a.b-c// y",
+          ROOT(EL("p", "", TX("x ") "," EL("em", "", TX("a.b-c")) "," TX(" y"))), &o);
+    /* An underscore before a scheme disqualifies it — and then the `//` is
+     * just a marker, which opens an emphasis that runs to the end. Checked
+     * against the JavaScript rather than assumed: the obvious expectation is
+     * that the whole thing stays literal text, and it does not. */
+    check("_ before a scheme is not a link", "a _http://x.com b",
+          ROOT(EL("p", "", TX("a _http:") "," EL("em", "", TX("x.com b")))), &o);
+
+    printf("--- mdyast: loose and tight lists ---\n");
+    check("a blank line between items makes the list loose", "- a\n\n- b",
+          ROOT(EL("ul", "", TX("\\n") ","
+                  EL("li", "", TX("\\n") "," EL("p", "", TX("a")) "," TX("\\n")) "," TX("\\n") ","
+                  EL("li", "", TX("\\n") "," EL("p", "", TX("b")) "," TX("\\n")) "," TX("\\n"))), &o);
+
+    printf("--- mdyast: indentation nests ---\n");
+    /* Every TWO columns is one level, so four columns is two divs. */
+    check("four columns is two nested divs", "top\n    in",
+          ROOT(EL("p", "", TX("top")) ","
+               EL("div", "", TX("\\n") ","
+                  EL("div", "", TX("\\n") "," EL("p", "", TX("in")) "," TX("\\n")) ","
+                  TX("\\n"))), &o);
+
     printf("--- mdyast: unist positions ---\n");
     {
         /* Block elements only, and every number here is what mdy-docs emits

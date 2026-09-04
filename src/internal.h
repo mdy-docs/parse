@@ -159,6 +159,18 @@ size_t mdy_from_utf16(const uint16_t *units, size_t count, char *out, size_t cap
  * `slugify`, which hyphenates what this deletes. */
 const char *mdy_resolve_slug(mdy_doc *doc, const char *s, size_t len, size_t *out_len);
 
+/* ---- links (src/linkify.c) ----------------------------------------------- */
+
+/* One autolinked span, as byte offsets into the text. */
+typedef struct { size_t start, end; } mdy_link;
+
+/*
+ * Every URL in `text`, in order — a port of linkify-it, which is what mdy-docs
+ * uses. Returns how many were written. See src/linkify.c for what "port"
+ * covers and why it is not a set of heuristics.
+ */
+size_t mdy_find_links(const char *text, size_t len, mdy_link *out, size_t max);
+
 /* ---- emoji (src/emoji.c) -------------------------------------------------- */
 
 /*
