@@ -118,6 +118,14 @@ typedef struct {
      * mdy-docs; off makes the JSON about structure alone, which is what a
      * test comparing trees usually wants. */
     int positions;
+    /*
+     * Whether the element allowlist and attribute checks apply. ON by default,
+     * as mdy-docs' own default is — but the DOCUMENT ENGINE turns it off
+     * (`sanitize: false` in src/mdy.js), because by then the author is the
+     * template and the template already ran in a sandbox. A parser embedded in
+     * that engine has to be able to say so.
+     */
+    int sanitize;
 } mdy_options;
 
 void mdy_options_default(mdy_options *out);

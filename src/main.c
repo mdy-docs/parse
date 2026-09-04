@@ -1,7 +1,7 @@
 /*
  * mdyast — parse MDY on stdin or from files, write the tree as JSON.
  *
- *   mdyast [--documents] [--no-frontmatter] [--no-autolink] [file …]
+ *   mdyast [--documents] [--no-frontmatter] [--no-autolink] [--no-sanitize] [file …]
  *
  * One JSON tree per file, one per line, so the output can be diffed against
  * the JavaScript's line by line. See test/compare.mjs.
@@ -64,6 +64,7 @@ int main(int argc, char **argv) {
         if (strcmp(a, "--documents") == 0) { options.documents = 1; continue; }
         if (strcmp(a, "--no-frontmatter") == 0) { options.frontmatter = 0; continue; }
         if (strcmp(a, "--no-autolink") == 0) { options.autolink = 0; continue; }
+        if (strcmp(a, "--no-sanitize") == 0) { options.sanitize = 0; continue; }
         if (strcmp(a, "--stats") == 0) { stats = 1; continue; }
         if (a[0] == '-' && a[1] == '-') {
             fprintf(stderr, "mdyast: unknown option %s\n", a);

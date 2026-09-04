@@ -26,6 +26,7 @@ void mdy_options_default(mdy_options *out) {
     out->max_heading = 6;
     out->line_offset = 0;
     out->positions = 1;
+    out->sanitize = 1;
 }
 
 /* ---- lines --------------------------------------------------------------- */
@@ -327,11 +328,11 @@ static void parse_attributes(mdy_doc *doc, mdy_node *el, const char *tag,
             i = save;   /* a bare name — `hidden` */
         }
 
-        if (!mdy_attr_allowed(tag, name, name_len)) continue;
+        if (doc->options.sanitize && !mdy_attr_allowed(tag, name, name_len)) continue;
 
         const char *hast = mdy_hast_name(doc, name, name_len);
         if (!has_value) { mdy_set_bool(doc, el, hast, 1); continue; }
-        if (!mdy_protocol_allowed(hast, value, value_len)) continue;
+        if (doc->options.sanitize && !mdy_protocol_allowed(hast, value, value_len)) continue;
 
         if (strcmp(hast, "className") == 0) {
             /* A class attribute is a space-separated list, and hast keeps it
@@ -376,7 +377,8 @@ static size_t parse_element(mdy_doc *doc, mdy_node *parent,
 
     /* An element the schema does not allow produces nothing, and its children
      * go with it — which is what `sanitize` does. */
-    if (!mdy_tag_allowed(tag)) return child_lines(lines, count, i, l->indent);
+    if (doc->options.sanitize && !mdy_tag_allowed(tag))
+        return child_lines(lines, count, i, l->indent);
 
     mdy_node *el = mdy_new_element(doc, tag, tag_len);
     const char *content = NULL;
