@@ -389,6 +389,130 @@ static int starts_ci(const mdy_line *l, size_t at, const char *want) {
     return 1;
 }
 
+/*
+ * A fence opener, as src/parse/fence.js reads one: three or more backticks or
+ * tildes, then whatever is written after them.
+ *
+ * Two details that a "three backticks" test misses, and both were wrong here:
+ *
+ *   - The LANGUAGE is the first word of the info, not the whole of it. An info
+ *     of `js title="a b"` names the language `js`, and taking the lot put the
+ *     title inside the class attribute.
+ *   - A backtick fence may not carry a backtick in its info. Without that
+ *     rule a line of prose holding a stray pair of backticks opens a code
+ *     block that swallows the rest of the document.
+ *
+ * Returns the marker width, or 0 when the line is not an opener.
+ */
+static size_t fence_opener(const mdy_line *l, char *marker,
+                           const char **lang, size_t *lang_len) {
+    if (l->len < 3 || (l->text[0] != '`' && l->text[0] != '~')) return 0;
+    char c = l->text[0];
+    size_t width = 0;
+    while (width < l->len && l->text[width] == c) width++;
+    if (width < 3) return 0;
+
+    const char *info = l->text + width;
+    size_t info_len = l->len - width;
+    trim(&info, &info_len);
+    if (c == '`' && memchr(info, '`', info_len)) return 0;
+
+    /* `info.trim().split(/\s+/)[0]` — the first word and no more. */
+    size_t n = 0;
+    while (n < info_len && info[n] != ' ' && info[n] != '\t') n++;
+
+    *marker = c;
+    *lang = info;
+    *lang_len = n;
+    return width;
+}
+
+/** A line that closes a fence: the same character, at least as many, and
+ * nothing else once trailing whitespace is off. */
+static int closes_fence(const mdy_line *l, char marker, size_t width) {
+    const char *t = l->text;
+    size_t len = l->len;
+    mdy_trim_end(&t, &len);
+    if (len < width) return 0;
+    for (size_t k = 0; k < len; k++) if (t[k] != marker) return 0;
+    return 1;
+}
+
+/*
+ * Take a document's comments out.
+ *
+ * A `#` with nothing against it — a space, or the end of the line. What
+ * follows says a comment was meant, because a word against the `#` makes a
+ * tag instead; which also makes `# Title`, a Markdown heading, a comment
+ * here. MDY writes headings with `=`.
+ *
+ * A comment is a WHOLE LINE and leaves nothing behind, so the markup around
+ * it closes over the gap: the lines either side are as adjacent as they were,
+ * and the indentation the block parser reads is the content's alone. Each
+ * surviving line keeps its own `number`, so positions still point at the
+ * source the comment came out of.
+ *
+ * A fenced block is the one place they are content: `# ` opens a comment in
+ * half the languages a code sample might be written in, and one that quietly
+ * lost them would be worse than useless. So the fences are found first and
+ * whatever they hold is left exactly as it is.
+ */
+static int is_comment_line(const mdy_line *l) {
+    if (l->len == 0 || l->text[0] != '#') return 0;
+    return l->len == 1 || l->text[1] == ' ' || l->text[1] == '\t';
+}
+
+static void strip_comments(mdy_line *lines, size_t *count) {
+    size_t n = *count;
+    size_t any = 0;
+    for (size_t i = 0; i < n; i++) if (is_comment_line(&lines[i])) { any = 1; break; }
+    if (!any) return;                    /* left exactly as they are */
+
+    char marker = 0;
+    size_t width = 0;
+    size_t fence_indent = 0;
+    int in_fence = 0;
+    size_t o = 0;
+
+    for (size_t i = 0; i < n; i++) {
+        if (in_fence) {
+            if (closes_fence(&lines[i], marker, width)) {
+                /* The closer belongs to the block and cannot open another. */
+                in_fence = 0;
+                lines[o++] = lines[i];
+                continue;
+            }
+            /* An unclosed fence runs to the end of whatever encloses it,
+             * which is wherever the indentation comes back out. */
+            if (lines[i].len && lines[i].indent < fence_indent) in_fence = 0;
+            else { lines[o++] = lines[i]; continue; }
+        }
+
+        char c = 0;
+        const char *lang = NULL;
+        size_t lang_len = 0;
+        size_t w = fence_opener(&lines[i], &c, &lang, &lang_len);
+        if (w) {
+            in_fence = 1;
+            marker = c;
+            width = w;
+            fence_indent = lines[i].indent;
+        } else if (is_comment_line(&lines[i])) {
+            continue;
+        }
+        lines[o++] = lines[i];
+    }
+    *count = o;
+}
+
+/* The five elements whose content is text and nothing else — html.js's
+ * `rawText` set, and the same names the HTML parser treats as RCDATA. */
+static int is_raw_text(const char *tag) {
+    return strcmp(tag, "pre") == 0 || strcmp(tag, "script") == 0 ||
+           strcmp(tag, "style") == 0 || strcmp(tag, "textarea") == 0 ||
+           strcmp(tag, "title") == 0;
+}
+
 static size_t parse_element(mdy_doc *doc, mdy_node *parent,
                             const mdy_line *lines, size_t count, size_t i) {
     const mdy_line *l = &lines[i];
@@ -449,6 +573,50 @@ static size_t parse_element(mdy_doc *doc, mdy_node *parent,
     parse_attributes(doc, el, tag, l->text + n, l->len - n, &content, &content_len);
 
     size_t end = child_lines(lines, count, i, l->indent);
+
+    /*
+     * Elements whose content is TEXT and nothing else: pre, script, style,
+     * textarea, title. Markup inside a <script> is not markup, and parsing it
+     * as if it were is how a stylesheet ends up with an <em> in it.
+     *
+     * The lines come through as written, minus the indentation that put them
+     * in here — two columns past the opener's own, so anything deeper keeps
+     * the difference. A BLANK line contributes nothing at all rather than an
+     * empty line: the JavaScript joins with `filter(Boolean)`, which drops it
+     * along with an empty opener.
+     */
+    if (is_raw_text(tag)) {
+        size_t strip = l->indent + 2;
+        size_t need = 0;
+        if (content) { trim(&content, &content_len); need += content_len + 1; }
+        for (size_t k = i + 1; k < end; k++) {
+            if (lines[k].blank) continue;
+            size_t extra = lines[k].indent > strip ? lines[k].indent - strip : 0;
+            need += extra + lines[k].len + 1;
+        }
+        char *text = need ? mdy_alloc(&doc->arena, need + 1) : NULL;
+        size_t o = 0;
+        if (text) {
+            if (content && content_len) {
+                memcpy(text + o, content, content_len);
+                o += content_len;
+            }
+            for (size_t k = i + 1; k < end; k++) {
+                if (lines[k].blank) continue;
+                if (o) text[o++] = '\n';
+                size_t extra = lines[k].indent > strip ? lines[k].indent - strip : 0;
+                for (size_t sp = 0; sp < extra; sp++) text[o++] = ' ';
+                memcpy(text + o, lines[k].text, lines[k].len);
+                o += lines[k].len;
+            }
+            text[o] = '\0';
+        }
+        if (o) mdy_append(el, mdy_new_text(doc, text, o));
+        mdy_set_position(el, lines, i, end > i + 1 ? end - 1 : i);
+        separate(doc, parent);
+        mdy_append(parent, el);
+        return end;
+    }
 
     if (content) {
         /*
@@ -736,17 +904,15 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
         }
 
         /* --- fenced code: three or more backticks or tildes --- */
-        if (l->len >= 3 && (l->text[0] == '`' || l->text[0] == '~')) {
-            char fence = l->text[0];
-            size_t width = run_of(l, fence);
-            if (width >= 3) {
-                const char *lang = l->text + width;
-                size_t lang_len = l->len - width;
-                trim(&lang, &lang_len);
-
+        {
+            char fence = 0;
+            const char *lang = NULL;
+            size_t lang_len = 0;
+            size_t width = fence_opener(l, &fence, &lang, &lang_len);
+            if (width) {
                 size_t j = i + 1;
                 size_t start = j;
-                while (j < count && !(run_of(&lines[j], fence) >= width && lines[j].len == run_of(&lines[j], fence))) j++;
+                while (j < count && !closes_fence(&lines[j], fence, width)) j++;
 
                 /* The content, verbatim, with its own newlines and the
                  * original indentation relative to the fence. */
@@ -996,6 +1162,10 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
              * makes `top` / `  in` a paragraph and a div rather than one
              * paragraph reading "top in". */
             if (j > i && lines[j].indent > base) break;
+            char fence_here = 0;
+            const char *fl = NULL;
+            size_t fll = 0;
+            if (j > i && fence_opener(&lines[j], &fence_here, &fl, &fll)) break;
             if (j > i && (lines[j].text[0] == '=' || lines[j].text[0] == '<' ||
                           list_marker(&lines[j], &ordered_here) ||
                           ((all_of(&lines[j], '-') || all_of(&lines[j], '*') || all_of(&lines[j], '_')) && lines[j].len >= 3))) break;
@@ -1203,6 +1373,7 @@ mdy_doc *mdy_parse(const char *text, size_t len, const mdy_options *options) {
 
     size_t count = 0;
     mdy_line *lines = split_lines(doc, text, len, &count);
+    strip_comments(lines, &count);
 
     doc->root = mdy_alloc(&doc->arena, sizeof *doc->root);
     if (!doc->root) { mdy_free(doc); return NULL; }

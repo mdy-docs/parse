@@ -348,6 +348,53 @@ int main(void) {
               ROOT(EL("div", "\"a\":true,\"comment\":true", "")), &raw);
     }
 
+    printf("--- mdyast: raw-text elements ---\n");
+    /*
+     * pre, script, style, textarea, title: markup inside a <script> is not
+     * markup, and parsing it as if it were is how a stylesheet ends up with
+     * an <em> in it. A blank line inside contributes nothing.
+     *
+     * Unsanitised, because none of the five is in the schema — a document
+     * cannot carry a <script>, and these appear in LAYOUTS, which is also
+     * where a <title> wrapped in a <p> was found.
+     */
+    {
+        mdy_options raw = o;
+        raw.sanitize = 0;
+        check("a title holds text, not a paragraph", "< title\n  Order intake",
+              ROOT(EL("title", "", TX("Order intake"))), &raw);
+        check("…and its markup is left alone", "< title\n  a //b//",
+              ROOT(EL("title", "", TX("a //b//"))), &raw);
+        check("indentation past the opener's is kept", "< title\n  a\n    b",
+              ROOT(EL("title", "", TX("a\\n  b"))), &raw);
+        check("a blank line inside contributes nothing", "< title\n  a\n\n  b",
+              ROOT(EL("title", "", TX("a\\nb"))), &raw);
+    }
+
+    printf("--- mdyast: comments ---\n");
+    /* A `#` with nothing against it. A word against it is a tag instead —
+     * which makes `# Title`, a Markdown heading, a comment here. */
+    check("a comment line leaves nothing behind", "# a comment\ntext",
+          ROOT(EL("p", "", TX("text"))), &o);
+    check("the lines either side stay adjacent", "alpha\n# gap\nbeta",
+          ROOT(EL("p", "", TX("alpha beta"))), &o);
+    check("a bare # is a comment too", "#\ntext",
+          ROOT(EL("p", "", TX("text"))), &o);
+    /* A word against the `#` makes a TAG, which is the whole reason the
+     * comment rule needs the space — and is what the JavaScript does. */
+    check("a word against the # is a tag, not a comment", "#tag\n",
+          ROOT(EL("p", "", EL("a", "\"href\":\"/tags/tag\"", TX("#tag")))), &o);
+    /* The one place a comment is content: a code sample that quietly lost its
+     * comments would be worse than useless. */
+    check("a fence keeps its own", "```py\n# kept\n```",
+          ROOT(EL("pre", "", EL("code", "\"className\":[\"language-py\"]", TX("# kept\\n")))), &o);
+
+    printf("--- mdyast: fences ---\n");
+    check("the language is the first word of the info", "```js title=\"a b\"\nx\n```",
+          ROOT(EL("pre", "", EL("code", "\"className\":[\"language-js\"]", TX("x\\n")))), &o);
+    check("a fence interrupts a paragraph", "text\n```\ncode\n```",
+          ROOT(EL("p", "", TX("text")) "," EL("pre", "", EL("code", "", TX("code\\n")))), &o);
+
     printf("--- mdyast: hast property names ---\n");
     /*
      * `property-information`'s `find(html, name)`, which is what mdy-docs
