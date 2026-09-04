@@ -120,6 +120,7 @@ void mdy_set_string(mdy_doc *doc, mdy_node *el, const char *name, const char *va
 void mdy_set_number(mdy_doc *doc, mdy_node *el, const char *name, double value);
 void mdy_set_bool(mdy_doc *doc, mdy_node *el, const char *name, int value);
 void mdy_add_class(mdy_doc *doc, mdy_node *el, const char *class_name);
+void mdy_clear_class(mdy_doc *doc, mdy_node *el);
 
 /* ---- attributes and the schema ------------------------------------------- */
 

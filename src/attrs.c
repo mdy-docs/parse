@@ -20,70 +20,105 @@
 /* ---- hast property names -------------------------------------------------- */
 
 /*
- * The HTML attribute names that hast spells differently. Only the ones this
- * parser can actually meet: the full table is a few hundred entries and every
- * one absent from here falls through to the `data-`/`aria-` rules or to itself,
- * which is right for `src`, `href`, `alt`, `id`, `lang` and the rest.
+ * An HTML attribute name to its hast property name.
+ *
+ * This is `property-information`'s `find(html, name)`, which is what mdy-docs
+ * calls, reproduced exactly rather than approximated — and the difference is
+ * not academic. A hand-written table of the twenty names that "obviously"
+ * matter got three separate things wrong, each of which changed real output:
+ *
+ *   - The lookup is case-INSENSITIVE. `SRC` is `src`, and `For` is `htmlFor`.
+ *   - An UNKNOWN name is kept verbatim, not lowercased. `FOO` stays `FOO`.
+ *   - `data-` camel-cases only where a dash is followed by a LOWERCASE letter,
+ *     so `DATA-x-Y` is `dataX-Y` and not `dataXY`.
+ *
+ * The last two are only reachable through malformed markup, which is exactly
+ * where they were found: an unescaped quote inside an `alt=""` turns the rest
+ * of a caption into bare attributes, and one name resolved differently was
+ * enough to reorder the whole element's properties downstream.
+ *
+ * MDY_PROPS is generated from the library itself — scripts/generate_props.mjs.
  */
-static const struct { const char *html; const char *hast; } RENAMES[] = {
-    { "class",       "className" },
-    { "colspan",     "colSpan" },
-    { "rowspan",     "rowSpan" },
-    { "for",         "htmlFor" },
-    { "http-equiv",  "httpEquiv" },
-    { "accept-charset", "acceptCharset" },
-    { "maxlength",   "maxLength" },
-    { "minlength",   "minLength" },
-    { "readonly",    "readOnly" },
-    { "tabindex",    "tabIndex" },
-    { "crossorigin", "crossOrigin" },
-    { "datetime",    "dateTime" },
-    { "srcset",      "srcSet" },
-    { "usemap",      "useMap" },
-    { "novalidate",  "noValidate" },
-    { "autocomplete","autoComplete" },
-    { "autofocus",   "autoFocus" },
-    { "autoplay",    "autoPlay" },
-    { "contenteditable", "contentEditable" },
-    { "spellcheck",  "spellCheck" },
-};
+#include "props_table.h"
+
+/** ASCII lowercase. Attribute names are ASCII by construction: parse_element
+ * only admits [A-Za-z_:][A-Za-z0-9._:-]* as a name. */
+static char lower_ascii(char c) {
+    return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+}
+
+/** The schema's property name for a normalized attribute name, or NULL. */
+static const char *schema_lookup(const char *normal, size_t len) {
+    size_t lo = 0, hi = MDY_PROPS_COUNT;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        const char *cand = MDY_PROPS[mid].normal;
+        size_t clen = strlen(cand);
+        size_t n = clen < len ? clen : len;
+        int cmp = memcmp(cand, normal, n);
+        if (cmp == 0) cmp = clen < len ? -1 : (clen > len ? 1 : 0);
+        if (cmp == 0) return MDY_PROPS[mid].property;
+        if (cmp < 0) lo = mid + 1; else hi = mid;
+    }
+    return NULL;
+}
+
+/** `/^data[-\w.:]+$/` on the ORIGINAL spelling, as the library tests it. */
+static int data_shaped(const char *name, size_t len) {
+    for (size_t i = 4; i < len; i++) {
+        char c = name[i];
+        int ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                 (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' || c == ':';
+        if (!ok) return 0;
+    }
+    return len > 4;
+}
 
 /**
- * `data-foo-bar` -> `dataFooBar`, `aria-label` -> `ariaLabel`. Written into
- * `out` (which must hold len+1), returning its length, or 0 when the name is
- * not one of those.
+ * The `data-` branch: drop `data-`, upper-case a letter following each dash
+ * that is followed by a LOWERCASE one (`/-[a-z]/g`), then capitalise the first
+ * character and prefix a literal lowercase `data`. Written into `out`.
  */
-static size_t camel_prefixed(const char *name, size_t len, char *out) {
-    size_t skip;
-    if (len > 5 && memcmp(name, "data-", 5) == 0) skip = 5;
-    else if (len > 5 && memcmp(name, "aria-", 5) == 0) skip = 5;
-    else return 0;
-
-    memcpy(out, name, 4);     /* "data" or "aria" */
+static size_t data_property(const char *name, size_t len, char *out) {
+    memcpy(out, "data", 4);
     size_t o = 4;
-    int upper = 1;
-    for (size_t i = skip; i < len; i++) {
-        if (name[i] == '-') { upper = 1; continue; }
+    size_t i = 5;                       /* past "data-" */
+    int first = 1;
+    while (i < len) {
         char c = name[i];
-        if (upper && c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
-        out[o++] = c;
-        upper = 0;
+        if (c == '-' && i + 1 < len && name[i + 1] >= 'a' && name[i + 1] <= 'z') {
+            out[o++] = (char)(name[i + 1] - 'a' + 'A');
+            i += 2;
+        } else {
+            out[o++] = c;
+            i += 1;
+        }
+        if (first) {                    /* `rest.charAt(0).toUpperCase()` */
+            out[4] = (char)((out[4] >= 'a' && out[4] <= 'z') ? out[4] - 'a' + 'A' : out[4]);
+            first = 0;
+        }
     }
     out[o] = '\0';
     return o;
 }
 
 const char *mdy_hast_name(mdy_doc *doc, const char *name, size_t len) {
-    for (size_t i = 0; i < sizeof RENAMES / sizeof RENAMES[0]; i++) {
-        if (strlen(RENAMES[i].html) == len && memcmp(RENAMES[i].html, name, len) == 0) {
-            return mdy_intern(&doc->arena, &doc->names, RENAMES[i].hast, strlen(RENAMES[i].hast));
+    char normal[256];
+    if (len < sizeof normal) {
+        for (size_t i = 0; i < len; i++) normal[i] = lower_ascii(name[i]);
+        normal[len] = '\0';
+
+        const char *found = schema_lookup(normal, len);
+        if (found) return mdy_intern(&doc->arena, &doc->names, found, strlen(found));
+
+        if (len > 4 && memcmp(normal, "data", 4) == 0 && data_shaped(name, len) &&
+            name[4] == '-') {
+            char buf[256];
+            size_t n = data_property(name, len, buf);
+            return mdy_intern(&doc->arena, &doc->names, buf, n);
         }
     }
-    char buf[128];
-    if (len < sizeof buf - 1) {
-        size_t n = camel_prefixed(name, len, buf);
-        if (n) return mdy_intern(&doc->arena, &doc->names, buf, n);
-    }
+    /* Unknown: hast keeps the author's spelling, case and all. */
     return mdy_intern(&doc->arena, &doc->names, name, len);
 }
 

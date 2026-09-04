@@ -355,7 +355,8 @@ static void parse_attributes(mdy_doc *doc, mdy_node *el, const char *tag,
 
         if (strcmp(hast, "className") == 0) {
             /* A class attribute is a space-separated list, and hast keeps it
-             * as one. */
+             * as one. A repeated attribute replaces — properties is an object. */
+            mdy_clear_class(doc, el);
             size_t k = 0;
             while (k < value_len) {
                 while (k < value_len && (value[k] == ' ' || value[k] == '\t')) k++;

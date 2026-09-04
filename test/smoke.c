@@ -348,6 +348,33 @@ int main(void) {
               ROOT(EL("div", "\"a\":true,\"comment\":true", "")), &raw);
     }
 
+    printf("--- mdyast: hast property names ---\n");
+    /*
+     * `property-information`'s `find(html, name)`, which is what mdy-docs
+     * calls. Each of these was wrong when the table was hand-written, and each
+     * changed real output: one attribute resolving differently was enough to
+     * reorder an entire element's properties downstream.
+     */
+    {
+        mdy_options raw = o;
+        raw.sanitize = 0;
+        check("a known name is matched case-insensitively", "<img SRC=\"a\">",
+              ROOT(EL("img", "\"src\":\"a\"", "")), &raw);
+        check("…including the ones hast respells", "<i For=\"a\">",
+              ROOT(EL("i", "\"htmlFor\":\"a\"", "")), &raw);
+        check("an unknown name keeps the author's case", "<img FOO=\"1\">",
+              ROOT(EL("img", "\"FOO\":\"1\"", "")), &raw);
+        check("data- camel-cases only before a lowercase letter", "<img DATA-x-Y=\"e\">",
+              ROOT(EL("img", "\"dataX-Y\":\"e\"", "")), &raw);
+        check("…and does capitalise the first segment", "<img data-foo-bar=\"d\">",
+              ROOT(EL("img", "\"dataFooBar\":\"d\"", "")), &raw);
+        /* Properties are an object, so a repeated attribute REPLACES. The
+         * append in mdy_add_class is for the parser's own classes. */
+        check("a repeated class replaces rather than accumulating",
+              "<i ClassName=\"a\" CLASS=\"b\">",
+              ROOT(EL("i", "\"className\":[\"b\"]", "")), &raw);
+    }
+
     printf("--- mdyast: ordered list start ---\n");
     /* A marker may be followed by the END OF THE LINE, and an ordered list
      * that does not begin at 1 records where it does. */

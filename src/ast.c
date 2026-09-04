@@ -107,6 +107,21 @@ void mdy_add_class(mdy_doc *doc, mdy_node *el, const char *class_name) {
     p->list_len++;
 }
 
+/**
+ * Drop whatever classes an element has.
+ *
+ * Properties are an OBJECT, so a second `class=` on the same tag replaces the
+ * first rather than adding to it — `<i ClassName="a" CLASS="b">` is `["b"]`.
+ * The append in mdy_add_class is for the parser's own classes, where more than
+ * one rule can contribute; a repeated attribute is not that case.
+ */
+void mdy_clear_class(mdy_doc *doc, mdy_node *el) {
+    (void)doc;
+    for (mdy_prop *q = el->props; q; q = q->next) {
+        if (strcmp(q->name, "className") == 0) { q->list = NULL; q->list_len = 0; return; }
+    }
+}
+
 /* ---- a growable output buffer -------------------------------------------- */
 
 typedef struct { char *s; size_t len, cap; int positions; } Out;
