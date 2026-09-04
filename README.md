@@ -2,10 +2,10 @@
 
 MDY document text to a hast tree, in C.
 
-An investigation, and it is worth saying so up front: this is not a finished
-parser and does not yet claim to be one. It exists to answer a specific
+An investigation that grew into most of a parser. It answers a specific
 question with running code rather than an estimate — *what would it take to
-parse MDY natively, and what would it be worth?*
+parse MDY natively, and what would it be worth?* — and it is checked against
+mdy-docs' own parser over a real corpus, document by document.
 
 ## Why
 
@@ -28,15 +28,38 @@ worst ratio of any component.
 The reference corpus: 87 Wikipedia-derived documents, 6.5 MB of text.
 
 ```
-  JavaScript (node/V8) :  2022 ms   284872 nodes
-  C                    :    87 ms   176100 nodes  (62% of them)
+  JavaScript (node/V8) :  2030 ms   284872 nodes
+  C                    :   163 ms   284175 nodes  (100% of them)
 ```
 
-**Read that as an order of magnitude, not a figure.** The C produces 62% of the
-nodes because it implements about that much of the language, so it is doing
-less work and the ratio flatters it. Even halving it for the missing 38%, and
-even before the QuickJS-versus-V8 factor that is the actual comparison, the
-answer to "is this worth doing" is not close.
+**12.5× faster, doing the same amount of work.** An earlier cut of this said
+23×, and that number was flattered: it implemented 62% of the language, so it
+was building 62% of the tree. This one builds the whole tree, and the honest
+ratio is half of what the partial one advertised — which is worth recording,
+because a benchmark against an incomplete implementation is a benchmark against
+nothing.
+
+The comparison that actually matters is against QuickJS, not V8. mdy-docs'
+front end was measured at 8.8× slower under QuickJS, so a native backend that
+parses in C rather than in its embedded JavaScript engine is looking at roughly
+two orders of magnitude on this stage.
+
+## How close is the tree?
+
+`make compare` builds both and diffs them:
+
+```
+  26/87 documents byte-identical
+  284175 nodes against the JavaScript's 284872 (100%)
+  32/87 documents with identical text
+  99.98% of hrefs are ones the JavaScript also produces
+```
+
+Whole-document equality is a hard bar for a 70 KB Wikipedia article — one rule
+missing anywhere makes the document differ — so the other three numbers are
+what movement looks like while the work is in progress. The largest remaining
+differences by tag are `a` −134, `div` −38, `p` −35 and `em` −21, out of
+49,211, 40, 14,217 and 5,842 respectively.
 
 ## What it does today
 
@@ -46,29 +69,29 @@ and the harness is as much the point of this repo as the parser is.
 
 | | |
 | --- | --- |
-| **Block** | documents (`---` → `<article>`), front matter, headings with slugged ids, thematic breaks, fenced code, bullet and ordered lists, paragraphs with line joining |
-| **Inline** | the nine toggling markers, backslash escapes, raw spans, autolink, wiki links (`[[ label ]]`, `[[ label \| url ]]`) |
-| **Tree** | the three node types the corpus actually produces, arena-allocated, with interned tag and property names |
+| **Block** | documents (`---` → `<article>`), front matter, headings with slugged and de-duplicated ids, thematic breaks, fenced code, bullet and ordered lists, paragraphs with line joining, the `<element` syntax with indentation nesting, pipe tables with alignment |
+| **Inline** | the nine toggling markers, backslash escapes, raw spans, autolink (schemes and protocol-relative `//host`), wiki links, footnote references, `#tag` and `@user`, em dash, ellipsis, the six arrows |
+| **Footnotes** | references, definitions, numbering by first reference, the collected `<section>` with per-reference backrefs |
+| **Sanitisation** | the element allowlist, per-element attribute allowlists, and the `href`/`src` protocol check |
+| **Attributes** | hast property naming (`class` → `className`, `colspan` → `colSpan`, `data-x` → `dataX`), with `className` as a list |
+| **Tree** | the three node types the corpus produces, arena-allocated, with interned tag and property names |
 
-**Not implemented**, in rough order of how much of the remaining 38% each is
-worth:
+**Still missing:**
 
-- **Footnotes.** `[[ ^id ]]` references and their definitions, collected into a
-  `<section>` with backrefs. The corpus is Wikipedia-derived, so this is the
-  single biggest gap: 15,846 `<sup>` and a large share of the 49,211 `<a>`.
-  It needs a whole-document pass rather than an inline rule, which is why it is
-  not here — a reference only becomes one if a definition exists.
-- **Syntax highlighting** in fenced code. mdy-docs uses lowlight; a C
-  implementation would need its own, and the corpus barely exercises it.
-- **The `<element` block syntax**, which is where `<blockquote>`, `<table>` and
-  `<figure>` come from.
-- **Tables**, both the pipe syntax and alignment.
-- **Tags and mentions** (`#tag`, `@user`), **emoji**, **em dash**, **ellipsis**,
-  **arrows** — all small, all independent.
-- **Sanitisation**, which mdy-docs applies to author-written HTML.
+- **Syntax highlighting** in fenced code. mdy-docs uses lowlight, so a C
+  implementation needs its own; the corpus has no fenced code at all, which is
+  why it has not been the priority.
+- **Emoji.** `:rocket:` and `:)` both become characters, and both need tables —
+  the shortcode one is large. The corpus has 20 of them.
+- **The indented-`div` rule.** "Lines indented under anything else get a `<div>`
+  of their own" is real, but a first attempt produced 755 divs where the
+  JavaScript makes 40, so the condition is narrower than the obvious reading.
+  Left unimplemented rather than guessed at — see the note in `src/block.c`.
 - **Positions.** Nodes carry `line`/`column` fields but the emitter does not
   write them, and the harness drops them from both sides. mdy-docs reports
   warnings against them, so they are part of the contract eventually.
+- The last **0.3%** of links and paragraphs, which the harness names precisely
+  and which is what `make compare --first` is for.
 
 ## Build
 

@@ -75,6 +75,29 @@ A marker only opens if its closer appears later, which is what makes an
 unmatched `**` come out as two asterisks rather than swallowing the rest of the
 line.
 
+## Footnotes are a document pass
+
+`src/footnote.c`, and the reason it is not an inline rule is worth stating: a
+`[[ ^id ]]` becomes a footnote only if a definition exists somewhere in the
+same document, so definitions are collected out of the line stream before any
+parsing runs. Three rules follow from asking the JavaScript rather than reading
+it:
+
+- Numbering is by order of **first reference**, not of definition, and the list
+  at the end is in that order too.
+- A second reference to the same note gets id `…-2`, and the definition grows a
+  second backref carrying a `<sup>` that says which.
+- A definition nothing references is dropped, and a document with no referenced
+  footnotes gets no section at all.
+
+## Sanitisation is not optional
+
+`src/attrs.c`. It is easy to read the schema as a safety feature that could be
+skipped for a first cut, and that is wrong: `<td scope="col">` produces no
+`scope` in the tree, because `scope` is allowed on `<th>` and not on `<td>`.
+Skipping the check does not produce "slightly more" tree — it produces a
+different one.
+
 ## Emitting
 
 `mdy_to_json` writes the tree with a fixed key order and JSON.stringify's exact

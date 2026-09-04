@@ -58,6 +58,40 @@ typedef struct {
 
 const char *mdy_intern(mdy_arena *arena, mdy_intern_table *table, const char *s, size_t len);
 
+/* ---- footnotes ----------------------------------------------------------- */
+
+/*
+ * `[[ ^id ]]` references and `[[ ^id ]]: text` definitions.
+ *
+ * Three rules make this a document-level pass rather than an inline rule, and
+ * each was established by asking the JavaScript rather than by reading it:
+ *
+ *   - A reference with no definition stays literal text. So definitions have
+ *     to be collected before any inline parsing runs.
+ *   - Numbering follows the order of FIRST REFERENCE, not the order of
+ *     definition — `[[ ^b ]]` referenced first is footnote 1 — and the list at
+ *     the end is in that order too.
+ *   - A definition nothing references is dropped entirely, and a document with
+ *     no referenced footnotes gets no section at all.
+ */
+typedef struct {
+    const char *id;         /* interned */
+    const char *content;    /* arena-owned, the text after the colon */
+    size_t content_len;
+    int number;             /* 1-based, assigned at first reference; 0 = unreferenced */
+    int refs;               /* how many references have been seen */
+} mdy_footnote;
+
+/* The definition for `id`, or NULL. */
+mdy_footnote *mdy_footnote_find(mdy_doc *doc, const char *id, size_t len);
+
+/* Record one reference, assigning the footnote's number if this is the first.
+ * Returns which reference this is, 1-based — the suffix on its id. */
+int mdy_footnote_reference(mdy_doc *doc, mdy_footnote *note);
+
+/* Append the `<section>` of collected footnotes, if any were referenced. */
+void mdy_footnote_section(mdy_doc *doc, mdy_node *parent);
+
 /* ---- the document -------------------------------------------------------- */
 
 struct mdy_doc {
@@ -65,6 +99,16 @@ struct mdy_doc {
     mdy_intern_table names;
     mdy_node *root;
     mdy_options options;
+
+    mdy_footnote *notes;
+    size_t note_count, note_cap;
+    int next_number;
+
+    /* Every heading id already used, so a repeat gets `-1`, `-2`, … — see the
+     * heading rule in block.c. Shared across a stream's documents on purpose:
+     * two articles on one page must not both own `#introduction`. */
+    const char **heading_ids;
+    size_t heading_count, heading_cap;
 };
 
 /* ---- building ------------------------------------------------------------ */
@@ -76,6 +120,21 @@ void mdy_set_string(mdy_doc *doc, mdy_node *el, const char *name, const char *va
 void mdy_set_number(mdy_doc *doc, mdy_node *el, const char *name, double value);
 void mdy_set_bool(mdy_doc *doc, mdy_node *el, const char *name, int value);
 void mdy_add_class(mdy_doc *doc, mdy_node *el, const char *class_name);
+
+/* ---- attributes and the schema ------------------------------------------- */
+
+const char *mdy_hast_name(mdy_doc *doc, const char *name, size_t len);
+int mdy_tag_allowed(const char *tag);
+int mdy_attr_allowed(const char *tag, const char *name, size_t len);
+int mdy_protocol_allowed(const char *attr, const char *value, size_t len);
+
+/* Lowercase one UTF-8 character into `out` (which must hold 4 bytes),
+ * returning how many bytes it consumed from `in`. */
+size_t mdy_lower_utf8(const char *in, size_t left, char *out);
+
+/* Whether one UTF-8 character is a letter or a number — `\p{L}` or `\p{N}`,
+ * which is the question defaultResolve asks of every character. */
+int mdy_is_letter_or_number(const char *p, size_t left);
 
 /* ---- the stages ---------------------------------------------------------- */
 

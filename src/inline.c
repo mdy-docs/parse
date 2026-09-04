@@ -13,6 +13,7 @@
  * <strong>. That is a deliberate divergence from markdown and it is what makes
  * scanning cheap — two bytes decide, with no lookbehind.
  */
+#include <stdio.h>
 #include <string.h>
 
 #include "internal.h"
@@ -51,9 +52,42 @@ static const Marker *marker_at(const char *p, size_t left) {
 
 /* ---- autolink ------------------------------------------------------------ */
 
+/*
+ * Where a URL begins. A scheme, or the `//host` of a protocol-relative one —
+ * mdy-docs uses linkify-it, and `//host` is a case it catches that is easy to
+ * miss.
+ *
+ * It is not a curiosity in this corpus: `//TravellersinEgypt.org//` is a
+ * protocol-relative link, and reading it as an emphasis marker instead
+ * produced 199 spurious <em> — the single largest remaining difference at the
+ * time. A `//` followed by something host-shaped is a URL; a `//` followed by
+ * prose is a marker.
+ */
+static int host_length(const char *p, size_t left) {
+    size_t n = 0, dots = 0, label = 0;
+    while (n < left) {
+        char c = p[n];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+            c == '-' || (unsigned char)c >= 0x80) {
+            /* Non-ASCII is a host character: `//rꜥ-qdy.t//` is a link in this
+             * corpus, and rejecting the bytes would make it emphasis. */
+            label++;
+            n++;
+            continue;
+        }
+        if (c == '.' && label > 0) { dots++; label = 0; n++; continue; }
+        break;
+    }
+    /* A host needs a dot and a final label that looks like a TLD. */
+    if (dots == 0 || label < 2) return 0;
+    return (int)n;
+}
+
 static int is_url_start(const char *p, size_t left) {
-    return (left >= 8 && memcmp(p, "https://", 8) == 0) ||
-           (left >= 7 && memcmp(p, "http://", 7) == 0);
+    if (left >= 8 && memcmp(p, "https://", 8) == 0) return 1;
+    if (left >= 7 && memcmp(p, "http://", 7) == 0) return 1;
+    if (left >= 5 && p[0] == '/' && p[1] == '/') return host_length(p + 2, left - 2) > 0;
+    return 0;
 }
 
 /*
@@ -98,12 +132,38 @@ static size_t url_length(const char *p, size_t left) {
  */
 /* ---- the scanner --------------------------------------------------------- */
 
+/*
+ * URL spans, found once before scanning starts.
+ *
+ * This is the mechanism the JavaScript uses (`findLinks`, then a check at
+ * every marker) and it is not an optimisation — it is what stops the `//` in
+ * `http://example.com` from opening an emphasis span. Without it a document
+ * full of URLs grows emphasis it never asked for, which is exactly what
+ * happened here: 200 spurious <em> across the reference corpus.
+ */
+#define MDY_MAX_URLS 512
+
+typedef struct {
+    size_t start, end;
+} Span;
+
 typedef struct {
     mdy_doc *doc;
     mdy_node *parent;    /* where finished nodes are appended */
     char *buf;           /* pending literal text */
     size_t len, cap;
+    const Span *urls;    /* sorted, non-overlapping */
+    size_t url_count;
 } Ctx;
+
+/** Is `i` inside a URL that autolink will consume? */
+static int inside_url(const Ctx *ctx, size_t i) {
+    for (size_t k = 0; k < ctx->url_count; k++) {
+        if (i >= ctx->urls[k].start && i < ctx->urls[k].end) return 1;
+        if (ctx->urls[k].start > i) break;
+    }
+    return 0;
+}
 
 static void flush(Ctx *ctx) {
     if (ctx->len == 0) return;
@@ -113,6 +173,30 @@ static void flush(Ctx *ctx) {
 
 static const char *slug_of(mdy_doc *doc, const char *s, size_t len, size_t *out_len);
 static size_t wiki_link(Ctx *ctx, const char *p, size_t left);
+
+/** Replace every <a> among `parent`'s children with its own children. */
+static void unwrap_links(mdy_node *parent) {
+    mdy_node *first = NULL, *last = NULL;
+    for (mdy_node *child = parent->first; child;) {
+        mdy_node *next = child->next;
+        if (child->type == MDY_ELEMENT && strcmp(child->tag, "a") == 0) {
+            for (mdy_node *inner = child->first; inner;) {
+                mdy_node *after = inner->next;
+                inner->next = NULL;
+                if (last) last->next = inner; else first = inner;
+                last = inner;
+                inner = after;
+            }
+        } else {
+            child->next = NULL;
+            if (last) last->next = child; else first = child;
+            last = child;
+        }
+        child = next;
+    }
+    parent->first = first;
+    parent->last = last;
+}
 
 static void push(Ctx *ctx, const char *s, size_t n) {
     if (ctx->len + n > ctx->cap) return;   /* the buffer is the whole input's size */
@@ -140,17 +224,33 @@ static void scan(Ctx *ctx, const char *text, size_t len) {
             continue;
         }
 
-        const Marker *m = marker_at(p, left);
+        /* `[[ … ]]` outranks a marker, matching the JavaScript's order — so a
+         * `//` inside a wiki link's target cannot pair with one outside it. */
+        if (left >= 4 && p[0] == '[' && p[1] == '[') {
+            size_t n = wiki_link(ctx, p, left);
+            if (n) { i += n; continue; }
+        }
+
+        const Marker *m = inside_url(ctx, i) ? NULL : marker_at(p, left);
         if (m) {
-            /* Only open if this marker closes again later; otherwise it is
-             * text. */
-            size_t close = 0;
+            /*
+             * A marker ALWAYS opens, and an unclosed one runs to the end of
+             * the input — `a //b` is `a <em>b</em>`, not the literal text.
+             *
+             * Worth stating because the opposite is the intuitive guess and it
+             * was the guess made here first: an assumption written into a test
+             * without being checked against the JavaScript, which then passed
+             * for the wrong reason and cost 196 spurious <em> across the
+             * corpus before anyone looked.
+             */
+            size_t close = len;
             int found = 0;
             for (size_t j = i + 2; j + 1 < len; j++) {
                 if (text[j] == '\\') { j++; continue; }
+                if (inside_url(ctx, j)) continue;
                 if (text[j] == m->seq[0] && text[j + 1] == m->seq[1]) { close = j; found = 1; break; }
             }
-            if (found) {
+            {
                 flush(ctx);
                 mdy_node *el = mdy_new_element(ctx->doc, m->tag, strlen(m->tag));
                 mdy_append(ctx->parent, el);
@@ -161,22 +261,69 @@ static void scan(Ctx *ctx, const char *text, size_t len) {
                     /* Nothing inside is markup — that is what raw means. */
                     if (inner_len) mdy_append(el, mdy_new_text(ctx->doc, inner, inner_len));
                 } else {
-                    Ctx nested = *ctx;
-                    nested.parent = el;
-                    nested.len = 0;
-                    nested.buf = ctx->buf + ctx->len;      /* the tail is unused */
-                    nested.cap = ctx->cap - ctx->len;
-                    scan(&nested, inner, inner_len);
-                    flush(&nested);
+                    /*
+                     * The nested scan works on a slice, so the outer URL spans
+                     * — whose offsets are into the whole string — do not apply.
+                     * It finds its own; that is what mdy_parse_inline does.
+                     */
+                    mdy_parse_inline(ctx->doc, el, inner, inner_len);
                 }
-                i = close + 2;
+                i = found ? close + 2 : len;
                 continue;
             }
         }
 
-        if (left >= 4 && p[0] == '[' && p[1] == '[') {
-            size_t n = wiki_link(ctx, p, left);
-            if (n) { i += n; continue; }
+        /*
+         * Typographic replacements, and the two references. All of these are
+         * text-level: they change what a reader sees rather than the shape of
+         * the tree, which is why a node count never notices them missing.
+         *
+         * `--` is an em dash and `---` is not — three hyphens stay literal,
+         * because a run of them is a thematic break's business.
+         */
+        if (left >= 3 && p[0] == '-' && p[1] == '-' && p[2] == '>') {
+            push(ctx, "\xe2\x86\x92", 3);  i += 3; continue;   /* → */
+        }
+        if (left >= 4 && memcmp(p, "<-->", 4) == 0) { push(ctx, "\xe2\x86\x94", 3); i += 4; continue; }  /* ↔ */
+        if (left >= 4 && memcmp(p, "<==>", 4) == 0) { push(ctx, "\xe2\x87\x94", 3); i += 4; continue; }  /* ⇔ */
+        if (left >= 3 && memcmp(p, "<--", 3) == 0)  { push(ctx, "\xe2\x86\x90", 3); i += 3; continue; }  /* ← */
+        if (left >= 3 && memcmp(p, "==>", 3) == 0)  { push(ctx, "\xe2\x87\x92", 3); i += 3; continue; }  /* ⇒ */
+        if (left >= 3 && memcmp(p, "<==", 3) == 0)  { push(ctx, "\xe2\x87\x90", 3); i += 3; continue; }  /* ⇐ */
+
+        if (left >= 3 && p[0] == '.' && p[1] == '.' && p[2] == '.') {
+            push(ctx, "\xe2\x80\xa6", 3);  i += 3; continue;   /* … */
+        }
+        /* Exactly two hyphens. Three or more is a run — `a---b` stays as it
+         * is — and that means looking BEHIND as well as ahead, or the second
+         * and third hyphens of a run pair up into one. */
+        if (left >= 2 && p[0] == '-' && p[1] == '-' &&
+            !(left >= 3 && p[2] == '-') && !(i > 0 && text[i - 1] == '-')) {
+            push(ctx, "\xe2\x80\x94", 3);  i += 2; continue;   /* — */
+        }
+
+        if ((p[0] == '#' || p[0] == '@') && left > 1) {
+            /* `#tag` and `@user`. The label keeps its case — `#Tag-One` links
+             * to `/tags/Tag-One` — which is the one thing about these that is
+             * easy to get wrong, since almost everything else here lowercases. */
+            size_t n = 1;
+            while (n < left) {
+                char c = p[n];
+                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') || c == '-' || c == '_') n++;
+                else break;
+            }
+            if (n > 1) {
+                flush(ctx);
+                mdy_node *a = mdy_new_element(ctx->doc, "a", 1);
+                char href[256];
+                snprintf(href, sizeof href, "%s%.*s", p[0] == '#' ? "/tags/" : "/users/",
+                         (int)(n - 1), p + 1);
+                mdy_set_string(ctx->doc, a, "href", href, strlen(href));
+                mdy_append(a, mdy_new_text(ctx->doc, p, n));
+                mdy_append(ctx->parent, a);
+                i += n;
+                continue;
+            }
         }
 
         if (ctx->doc->options.autolink && is_url_start(p, left)) {
@@ -200,34 +347,81 @@ static void scan(Ctx *ctx, const char *text, size_t len) {
 
 void mdy_parse_inline(mdy_doc *doc, mdy_node *parent, const char *text, size_t len) {
     if (len == 0) return;
-    Ctx ctx = { .doc = doc, .parent = parent, .len = 0, .cap = len + 1 };
+
+    Span urls[MDY_MAX_URLS];
+    size_t url_count = 0;
+    if (doc->options.autolink) {
+        for (size_t i = 0; i < len && url_count < MDY_MAX_URLS; i++) {
+            if (!is_url_start(text + i, len - i)) continue;
+            size_t n = url_length(text + i, len - i);
+            if (n == 0) continue;
+            urls[url_count].start = i;
+            urls[url_count].end = i + n;
+            url_count++;
+            i += n - 1;
+        }
+    }
+
+    Ctx ctx = { .doc = doc, .parent = parent, .len = 0, .cap = len + 1,
+                .urls = urls, .url_count = url_count };
     ctx.buf = mdy_alloc(&doc->arena, len + 1);
     if (!ctx.buf) return;
     scan(&ctx, text, len);
 }
 
 /*
- * The slug mdy-docs' defaultResolve uses for a bare label: the same rule as a
- * heading id. Kept here rather than shared with block.c because the two could
- * diverge — the JavaScript reaches them through different options — and a
- * shared helper would hide that if they ever did.
+ * Where a bare `[[ label ]]` points — mdy-docs' defaultResolve, which is NOT
+ * slugify and the difference matters:
+ *
+ *     defaultResolve   lowercase, whitespace to `-`, then DELETE anything
+ *                      outside [letters, numbers, - / . _ #]
+ *     slugify          lowercase, then anything outside [a-z0-9] becomes `-`
+ *
+ * So `Umm el-Qa'ab` resolves to `umm-el-qaab` — the apostrophe vanishes rather
+ * than becoming a hyphen — and `Edward R. Ayrton` keeps its full stop. Getting
+ * these confused produced `umm-el-qa-ab` and `edward-r-ayrton`, which are
+ * links to nowhere.
+ *
+ * Letters and numbers are Unicode there. A UTF-8 continuation byte is kept
+ * here on the same basis: a multi-byte character is a letter far more often
+ * than not, and treating one as punctuation would mangle every non-English
+ * label in the corpus.
  */
 static const char *slug_of(mdy_doc *doc, const char *s, size_t len, size_t *out_len) {
-    char *out = mdy_alloc(&doc->arena, len + 1);
+    char *out = mdy_alloc(&doc->arena, len + 2);
     if (!out) { *out_len = 0; return NULL; }
     size_t o = 0;
-    int pending = 0;
     for (size_t i = 0; i < len; i++) {
         unsigned char c = (unsigned char)s[i];
-        int keep = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
-        if (c >= 'A' && c <= 'Z') { c = (unsigned char)(c - 'A' + 'a'); keep = 1; }
-        if (keep) {
-            if (pending && o) out[o++] = '-';
-            pending = 0;
-            out[o++] = (char)c;
-        } else {
-            pending = 1;
+
+        /* Whitespace, including the no-break space a copied corpus is full of
+         * — `\s` matches it, and missing that leaves a space in a URL. */
+        int space = c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
+                    (c == 0xC2 && i + 1 < len && (unsigned char)s[i + 1] == 0xA0);
+        if (space) {
+            if (o && out[o - 1] != '-') out[o++] = '-';
+            if (c == 0xC2) i++;
+            continue;
         }
+
+        if (c == '-' || c == '/' || c == '.' || c == '_' || c == '#' ||
+            mdy_is_letter_or_number(s + i, len - i)) {
+            char lowered[4];
+            size_t n = mdy_lower_utf8(s + i, len - i, lowered);
+            for (size_t k = 0; k < n; k++) out[o++] = lowered[k];
+            i += n - 1;
+            continue;
+        }
+        /*
+         * Deleted — and the WHOLE character, not one byte of it. Advancing by
+         * one left the trailing bytes of an en dash behind, which came out as
+         * `first-jewish\xe2\x80\x93roman-war` minus its lead byte: mojibake in
+         * a URL, and invisible in any test that only counts nodes.
+         */
+        unsigned char lead = c;
+        size_t width = lead < 0x80 ? 1 : (lead & 0xE0) == 0xC0 ? 2 : (lead & 0xF0) == 0xE0 ? 3 : 4;
+        if (i + width > len) width = 1;
+        i += width - 1;
     }
     out[o] = '\0';
     *out_len = o;
@@ -254,7 +448,35 @@ static size_t wiki_link(Ctx *ctx, const char *p, size_t left) {
     size_t body_len = close - 2;
     cut(&body, &body_len);
     if (body_len == 0) return 0;
-    if (body[0] == '^') return 0;      /* a footnote reference — see above */
+    if (body[0] == '^') {
+        /*
+         * A footnote reference — but only if the definition exists. Without
+         * one it stays literal text, which is what the JavaScript does and
+         * why definitions are collected before any of this runs.
+         */
+        mdy_footnote *note = mdy_footnote_find(ctx->doc, body + 1, body_len - 1);
+        if (!note) return 0;
+        int n = mdy_footnote_reference(ctx->doc, note);
+
+        char buf[256];
+        flush(ctx);
+        mdy_node *sup = mdy_new_element(ctx->doc, "sup", 3);
+        mdy_node *a = mdy_new_element(ctx->doc, "a", 1);
+
+        snprintf(buf, sizeof buf, "#user-content-fn-%s", note->id);
+        mdy_set_string(ctx->doc, a, "href", buf, strlen(buf));
+        if (n > 1) snprintf(buf, sizeof buf, "user-content-fnref-%s-%d", note->id, n);
+        else snprintf(buf, sizeof buf, "user-content-fnref-%s", note->id);
+        mdy_set_string(ctx->doc, a, "id", buf, strlen(buf));
+        mdy_set_bool(ctx->doc, a, "dataFootnoteRef", 1);
+        mdy_set_string(ctx->doc, a, "ariaDescribedBy", "footnote-label", 14);
+
+        snprintf(buf, sizeof buf, "%d", note->number);
+        mdy_append(a, mdy_new_text(ctx->doc, buf, strlen(buf)));
+        mdy_append(sup, a);
+        mdy_append(ctx->parent, sup);
+        return close + 2;
+    }
 
     const char *label = body;
     size_t label_len = body_len;
@@ -283,7 +505,17 @@ static size_t wiki_link(Ctx *ctx, const char *p, size_t left) {
     flush(ctx);
     mdy_node *a = mdy_new_element(ctx->doc, "a", 1);
     mdy_set_string(ctx->doc, a, "href", target, target_len);
+
+    /*
+     * The label is content in its own right, parsed with autolink ON so a URL
+     * inside it survives the `//` marker — and then UNWRAPPED, because an <a>
+     * inside an <a> is not a thing. Skipping the unwrap left 150 nested links
+     * across the corpus, every one of them with a plausible href, which is why
+     * counting nodes found it and checking hrefs did not.
+     */
     mdy_parse_inline(ctx->doc, a, label, label_len);
+    unwrap_links(a);
+
     mdy_append(ctx->parent, a);
     return close + 2;
 }

@@ -4,15 +4,13 @@ Onboarding for agents and humans. Read this first.
 
 ## What this is
 
-An **investigation**, in running code: a C implementation of mdy-docs' MDY
-front end, which turns document text into a hast tree. Not a finished parser,
-and it does not claim to be — see README.md's coverage table for exactly how
-far it goes.
+A C implementation of mdy-docs' MDY front end, which turns document text into
+a hast tree. It began as an investigation into whether porting the front end
+out of JavaScript is worth doing; it now implements most of the language.
 
-The question it answers is whether porting the front end out of JavaScript is
-worth doing. On the reference corpus it is 23× faster than V8 while producing
-62% of the nodes, and the comparison that matters is against QuickJS, which is
-another 8.8× slower again.
+On the reference corpus it produces 100% of the JavaScript's nodes at 12.5×
+its speed, and 26 of 87 documents come out byte-identical. See README.md for
+what is still missing and for the numbers in full.
 
 ## Read these next, in order
 
@@ -31,6 +29,17 @@ compare` diffs both implementations over a real corpus and groups the first
 differences by shape; `--first` shows one in full. Pick the most frequent
 shape, implement it, watch the number move. That loop is why this repo is
 laid out the way it is.
+
+**Never write an expectation you have not asked the JavaScript for.** This has
+gone wrong three times here and each cost real work:
+
+- "An unclosed marker is text" — it is not; it opens a span that runs to the
+  end. The wrong expectation went into a test, the C had the same wrong idea,
+  the test passed, and 199 spurious `<em>` sat in the corpus until a histogram
+  found them.
+- "A single-column table is a degenerate table" — it is a paragraph, and `:-:`
+  in it is an emoticon.
+- "Non-ASCII is a letter" — an en dash is not, and `\p{L}` says so.
 
 Getting a construct's exact output is a question for the JavaScript, asked
 directly:

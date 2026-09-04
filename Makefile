@@ -11,7 +11,7 @@ CC      ?= cc
 AR      ?= ar
 CFLAGS  += -std=c11 -Wall -Wextra -Wshadow -O2 -g -Iinclude -Isrc
 
-SRCS := src/arena.c src/ast.c src/inline.c src/block.c
+SRCS := src/arena.c src/ast.c src/attrs.c src/footnote.c src/inline.c src/block.c
 OBJS := $(patsubst src/%.c,build/%.o,$(SRCS))
 
 # Where mdy-docs lives, for the comparison harness. Nothing in the library

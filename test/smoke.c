@@ -52,8 +52,12 @@ int main(void) {
           ROOT(EL("p", "", TX("a ") "," EL("strong", "", TX("b")) "," TX(" c"))), &o);
     check("// toggles em", "a //b// c",
           ROOT(EL("p", "", TX("a ") "," EL("em", "", TX("b")) "," TX(" c"))), &o);
-    check("an unclosed marker is text", "a ** b",
-          ROOT(EL("p", "", TX("a ** b"))), &o);
+    /* An unclosed marker still opens, and runs to the end of the input. This
+     * expectation was written the other way round first, on intuition rather
+     * than by asking the JavaScript — and it passed, because the C had the
+     * same wrong idea. */
+    check("an unclosed marker still opens", "a ** b",
+          ROOT(EL("p", "", TX("a ") "," EL("strong", "", TX(" b")))), &o);
     check("a backslash escapes", "a \\*\\*b\\*\\* c",
           ROOT(EL("p", "", TX("a **b** c"))), &o);
     check("`` is raw — nothing inside is markup", "a ``**b**`` c",
@@ -90,6 +94,79 @@ int main(void) {
     printf("--- mdyast: fences ---\n");
     check("a fence keeps its content verbatim", "```js\nlet x = 1\n```",
           ROOT(EL("pre", "", EL("code", "\"className\":[\"language-js\"]", TX("let x = 1\\n")))), &o);
+
+    printf("--- mdyast: tables ---\n");
+    check("a pipe table", "a | b\n--- | ---\n1 | 2",
+          ROOT(EL("table", "",
+                  TX("\\n") ","
+                  EL("thead", "", TX("\\n") ","
+                     EL("tr", "", TX("\\n") "," EL("th", "", TX("a")) ","
+                        TX("\\n") "," EL("th", "", TX("b")) "," TX("\\n")) ","
+                     TX("\\n")) ","
+                  TX("\\n") ","
+                  EL("tbody", "", TX("\\n") ","
+                     EL("tr", "", TX("\\n") "," EL("td", "", TX("1")) ","
+                        TX("\\n") "," EL("td", "", TX("2")) "," TX("\\n")) ","
+                     TX("\\n")) ","
+                  TX("\\n"))), &o);
+    /* A table needs a pipe: `a\\n:-:\\n1` is a paragraph, and `:-:` in it is an
+     * emoticon. Written the other way round first, on the assumption that one
+     * column is a degenerate table — it is not. */
+    check("alignment is a style attribute", "a | b\n:-: | --:\n1 | 2",
+          ROOT(EL("table", "",
+                  TX("\\n") ","
+                  EL("thead", "", TX("\\n") ","
+                     EL("tr", "", TX("\\n") ","
+                        EL("th", "\"style\":\"text-align: center\"", TX("a")) "," TX("\\n") ","
+                        EL("th", "\"style\":\"text-align: right\"", TX("b")) "," TX("\\n")) ","
+                     TX("\\n")) ","
+                  TX("\\n") ","
+                  EL("tbody", "", TX("\\n") ","
+                     EL("tr", "", TX("\\n") ","
+                        EL("td", "\"style\":\"text-align: center\"", TX("1")) "," TX("\\n") ","
+                        EL("td", "\"style\":\"text-align: right\"", TX("2")) "," TX("\\n")) ","
+                     TX("\\n")) ","
+                  TX("\\n"))), &o);
+
+    printf("--- mdyast: typography and references ---\n");
+    check("-- is an em dash", "a -- b", ROOT(EL("p", "", TX("a — b"))), &o);
+    check("--- is not", "a---b", ROOT(EL("p", "", TX("a---b"))), &o);
+    check("... is an ellipsis", "x...y", ROOT(EL("p", "", TX("x…y"))), &o);
+    check("--> is an arrow", "a --> b", ROOT(EL("p", "", TX("a → b"))), &o);
+    /* A tag keeps its case, unlike almost everything else that becomes a URL. */
+    check("#tag keeps its case", "see #Tag-One",
+          ROOT(EL("p", "", TX("see ") ","
+                  EL("a", "\"href\":\"/tags/Tag-One\"", TX("#Tag-One")))), &o);
+    check("@mention", "ask @dan",
+          ROOT(EL("p", "", TX("ask ") ","
+                  EL("a", "\"href\":\"/users/dan\"", TX("@dan")))), &o);
+
+    printf("--- mdyast: footnotes ---\n");
+    check("a reference with no definition stays text", "body [[ ^7 ]] end",
+          ROOT(EL("p", "", TX("body [[ ^7 ]] end"))), &o);
+    check("an unreferenced definition produces nothing", "body\n\n[[ ^9 ]]: never used",
+          ROOT(EL("p", "", TX("body"))), &o);
+
+    printf("--- mdyast: wiki links ---\n");
+    /* defaultResolve DELETES what it cannot keep; slugify would hyphenate it.
+     * `Umm el-Qa'ab` is umm-el-qaab, not umm-el-qa-ab. */
+    check("a bare label resolves to its own slug", "[[ Umm el-Qa\'ab ]]",
+          ROOT(EL("p", "", EL("a", "\"href\":\"umm-el-qaab\"", TX("Umm el-Qa\'ab")))), &o);
+    check("…keeping a full stop", "[[ Edward R. Ayrton ]]",
+          ROOT(EL("p", "", EL("a", "\"href\":\"edward-r.-ayrton\"", TX("Edward R. Ayrton")))), &o);
+    check("an explicit target is used verbatim", "[[ label | /url ]]",
+          ROOT(EL("p", "", EL("a", "\"href\":\"/url\"", TX("label")))), &o);
+
+    printf("--- mdyast: the element syntax ---\n");
+    check("a bare < is a div", "<\n  inside",
+          ROOT(EL("div", "", TX("\\n") "," EL("p", "", TX("inside")) "," TX("\\n"))), &o);
+    check("attributes become hast properties", "<img src=\"a.jpg\" height=\"10\"",
+          ROOT(EL("img", "\"src\":\"a.jpg\",\"height\":\"10\"", "")), &o);
+    /* scope is allowed on th and not on td — sanitisation is not optional. */
+    check("a disallowed attribute is dropped", "<td scope=\"col\" colspan=\"2\"",
+          ROOT(EL("td", "\"colSpan\":\"2\"", "")), &o);
+    check("a closing > makes the rest inline content", "<figcaption>caption text",
+          ROOT(EL("figcaption", "", TX("caption text"))), &o);
 
     printf("\n%s\n", failures ? "FAILURES" : "all checks passed");
     return failures ? 1 : 0;

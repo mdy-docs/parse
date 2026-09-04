@@ -188,6 +188,58 @@ for (let i = 0; i < files.length; i++) {
 }
 console.log(`${cTotal} nodes produced against the JavaScript's ${jsTotal} ` +
             `(${(cTotal / jsTotal * 100).toFixed(0)}%)`);
+
+/*
+ * A tag histogram of both sides. This is the diagnostic that names what is
+ * MISSING, where the first-difference report only says where the two trees
+ * stopped agreeing — and for a partial implementation those are different
+ * questions. The largest deficits are the work queue.
+ */
+const histogram = (tree, into) => {
+  const walk = (n) => {
+    if (n.type === 'element') into.set(n.tagName, (into.get(n.tagName) ?? 0) + 1);
+    for (const c of n.children ?? []) walk(c);
+  };
+  walk(tree);
+  return into;
+};
+const jsTags = new Map(), cTags = new Map();
+for (let i = 0; i < files.length; i++) {
+  histogram(fromMdy(readFileSync(files[i], 'utf8'), options), jsTags);
+  histogram(canonJson(lines[i]), cTags);
+}
+const rows = [...new Set([...jsTags.keys(), ...cTags.keys()])]
+  .map((tag) => ({ tag, js: jsTags.get(tag) ?? 0, c: cTags.get(tag) ?? 0 }))
+  .map((r) => ({ ...r, gap: r.js - r.c }))
+  .filter((r) => r.gap !== 0)
+  .sort((a, b) => Math.abs(b.gap) - Math.abs(a.gap));
+
+/*
+ * Text accuracy: the concatenated text content of both trees, compared per
+ * document. A tag histogram says the SHAPE is right; this says the words are —
+ * and the two fail independently, since a missing typographic rule changes
+ * every character of a paragraph without moving a single node count.
+ */
+const textOf = (n) => n.type === 'text' ? n.value : (n.children ?? []).map(textOf).join('');
+let sameText = 0, textChars = 0, matchChars = 0;
+for (let i = 0; i < files.length; i++) {
+  const a = textOf(canonJson(lines[i]));
+  const b = textOf(canon(fromMdy(readFileSync(files[i], 'utf8'), options)));
+  if (a === b) sameText++;
+  textChars += b.length;
+  let k = 0;
+  while (k < a.length && k < b.length && a[k] === b[k]) k++;
+  matchChars += k;
+}
+console.log(`${sameText}/${files.length} documents with identical text ` +
+            `(${(matchChars / textChars * 100).toFixed(2)}% of characters agree up to the first difference)`);
+
+if (rows.length) {
+  console.log('\nby tag, where the counts differ (JS - C):');
+  for (const r of rows.slice(0, 14)) {
+    console.log(`  ${r.tag.padEnd(12)} ${String(r.js).padStart(6)} vs ${String(r.c).padStart(6)}   ${r.gap > 0 ? '-' : '+'}${Math.abs(r.gap)}`);
+  }
+}
 if (differences.size) {
   console.log('\nwhere they first differ, by frequency:');
   for (const [shape, n] of [...differences].sort((a, b) => b[1] - a[1]).slice(0, 12)) {
