@@ -318,6 +318,25 @@ int main(void) {
     check("_ before a scheme is not a link", "a _http://x.com b",
           ROOT(EL("p", "", TX("a _http:") "," EL("em", "", TX("x.com b")))), &o);
 
+    printf("--- mdyast: doctype ---\n");
+    /* A fourth node type, and one a scan of the corpus's DOCUMENTS misses —
+     * a doctype only appears in a site's LAYOUTS. */
+    check("<!doctype html> is its own node", "<!doctype html>",
+          ROOT("{\"type\":\"doctype\"}"), &o);
+    check("…case-insensitively", "<!DOCTYPE html>",
+          ROOT("{\"type\":\"doctype\"}"), &o);
+    /* A comment is NOT special — the ordinary element rule handles it, and
+     * the JavaScript agrees. Its `a` and `comment` read as boolean attributes,
+     * which the schema then drops; with sanitize off they survive. */
+    check("a comment is an ordinary div", "<!-- a comment -->",
+          ROOT(EL("div", "", "")), &o);
+    {
+        mdy_options raw = o;
+        raw.sanitize = 0;
+        check("…keeping its stray attributes when unsanitised", "<!-- a comment -->",
+              ROOT(EL("div", "\"a\":true,\"comment\":true", "")), &raw);
+    }
+
     printf("--- mdyast: ordered list start ---\n");
     /* A marker may be followed by the END OF THE LINE, and an ordered list
      * that does not begin at 1 records where it does. */

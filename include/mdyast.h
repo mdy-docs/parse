@@ -14,7 +14,7 @@
  * WHAT THE TREE ACTUALLY IS, measured rather than assumed. Across the whole
  * reference corpus:
  *
- *     3 node types      root, element, text
+ *     3 node types      root, element, text (a layout adds doctype)
  *     32 tag names      a, sup, p, li, em, td, img, figure, tr, br, h2-h4, …
  *     19 property names href, id, className, dataFootnoteRef, src, width, …
  *
@@ -45,6 +45,13 @@ typedef enum {
     MDY_ROOT = 0,
     MDY_ELEMENT,
     MDY_TEXT,
+    /*
+     * `<!doctype html>`. A fourth type, and one this measured its way past at
+     * first: a scan of the reference corpus found three, because it scanned
+     * the corpus's DOCUMENTS and a doctype only appears in a site's LAYOUTS.
+     * Measuring the wrong population is its own kind of assumption.
+     */
+    MDY_DOCTYPE,
 } mdy_node_type;
 
 /*

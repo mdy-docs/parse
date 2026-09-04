@@ -162,6 +162,9 @@ static int emit(Out *o, const mdy_node *n) {
             if (out_json_string(o, n->text ? n->text : "") < 0) return -1;
             return out_put(o, "}", 1);
 
+        case MDY_DOCTYPE:
+            return out_str(o, "{\"type\":\"doctype\"}");
+
         case MDY_ROOT:
             if (out_str(o, "{\"type\":\"root\",\"children\":[") < 0) return -1;
             break;

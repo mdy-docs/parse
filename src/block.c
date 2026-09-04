@@ -357,9 +357,40 @@ static void parse_attributes(mdy_doc *doc, mdy_node *el, const char *tag,
 }
 
 /** Consume an element opener at line `i`; returns the next line to read. */
+/** Case-insensitive prefix test. */
+static int starts_ci(const mdy_line *l, size_t at, const char *want) {
+    size_t n = strlen(want);
+    if (at + n > l->len) return 0;
+    for (size_t k = 0; k < n; k++) {
+        char c = l->text[at + k];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c != want[k]) return 0;
+    }
+    return 1;
+}
+
 static size_t parse_element(mdy_doc *doc, mdy_node *parent,
                             const mdy_line *lines, size_t count, size_t i) {
     const mdy_line *l = &lines[i];
+
+    /*
+     * `<!doctype html>` is its own node type and carries nothing — not the
+     * name, not the line it was on. A comment is NOT special, by contrast:
+     * `<!-- a comment -->` comes out as a <div> with `a` and `comment` as
+     * boolean attributes, which is what the ordinary element rule below does
+     * with it and what the JavaScript does too.
+     */
+    if (starts_ci(l, 1, "!doctype")) {
+        mdy_node *dt = mdy_alloc(&doc->arena, sizeof *dt);
+        if (dt) {
+            memset(dt, 0, sizeof *dt);
+            dt->type = MDY_DOCTYPE;
+            separate(doc, parent);
+            mdy_append(parent, dt);
+        }
+        return i + 1;
+    }
+
     size_t n = 1;                       /* past the `<` */
     while (n < l->len && is_name_char(l->text[n])) n++;
 
