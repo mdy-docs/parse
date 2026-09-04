@@ -161,6 +161,15 @@ typedef struct {
     size_t len, cap;
     const Span *urls;    /* sorted, non-overlapping */
     size_t url_count;
+    /*
+     * Whether the next position starts a word. Tracked as STATE, not computed
+     * from the previous byte, because what sets it is what the scanner just
+     * did rather than what the text says: a marker or a wiki link leaves a
+     * boundary behind, an em dash does not, and an ordinary character leaves
+     * one only when it is whitespace. Emoticons are the only rule that reads
+     * it, and getting it wrong makes faces out of the middle of URLs.
+     */
+    int at_boundary;
 } Ctx;
 
 /** Is `i` inside a URL that autolink will consume? */
@@ -212,8 +221,18 @@ static void unwrap_links(mdy_node *parent) {
     parent->last = last;
 }
 
+/*
+ * Append literal text to the pending run.
+ *
+ * The buffer is sized for GROWTH, not for the input's length, because several
+ * rules here replace a short sequence with a longer one: `:)` is two bytes and
+ * 😃 is four, `--` is two and an em dash is three. Sizing it to the input made
+ * this drop whatever ran past the end — silently, which is how `ok :) yes`
+ * came out as `ok 😃 ye`. Four times the input bounds every substitution in
+ * this file with room to spare.
+ */
 static void push(Ctx *ctx, const char *s, size_t n) {
-    if (ctx->len + n > ctx->cap) return;   /* the buffer is the whole input's size */
+    if (ctx->len + n > ctx->cap) return;
     memcpy(ctx->buf + ctx->len, s, n);
     ctx->len += n;
 }
@@ -234,6 +253,7 @@ static void scan(Ctx *ctx, const char *text, size_t len) {
          * backslash — `a \*b\* c` is `a *b* c`. */
         if (*p == '\\' && left > 1) {
             push(ctx, p + 1, 1);
+            ctx->at_boundary = 0;
             i += 2;
             continue;
         }
@@ -242,7 +262,7 @@ static void scan(Ctx *ctx, const char *text, size_t len) {
          * `//` inside a wiki link's target cannot pair with one outside it. */
         if (left >= 4 && p[0] == '[' && p[1] == '[') {
             size_t n = wiki_link(ctx, p, left);
-            if (n) { i += n; continue; }
+            if (n) { i += n; continue; }   /* wiki_link sets at_boundary itself */
         }
 
         const Marker *m = inside_url(ctx, i) ? NULL : marker_at(p, left);
@@ -282,37 +302,61 @@ static void scan(Ctx *ctx, const char *text, size_t len) {
                      */
                     mdy_parse_inline(ctx->doc, el, inner, inner_len);
                 }
+                ctx->at_boundary = 1;
                 i = found ? close + 2 : len;
                 continue;
             }
         }
 
         /*
-         * Typographic replacements, and the two references. All of these are
-         * text-level: they change what a reader sees rather than the shape of
-         * the tree, which is why a node count never notices them missing.
+         * Emoji, then the typographic replacements, in that order — the
+         * JavaScript checks emoji first and it matters: `:-->` would otherwise
+         * lose its head to the arrow rule.
          *
-         * `--` is an em dash and `---` is not — three hyphens stay literal,
-         * because a run of them is a thematic break's business.
+         * Neither reaches inside a raw span, which is handled by the marker
+         * branch copying that text verbatim rather than scanning it.
          */
-        if (left >= 3 && p[0] == '-' && p[1] == '-' && p[2] == '>') {
-            push(ctx, "\xe2\x86\x92", 3);  i += 3; continue;   /* → */
+        {
+            size_t used = 0;
+            const char *found = mdy_match_emoji(p, left, ctx->at_boundary, &used);
+            if (found) {
+                push(ctx, found, strlen(found));
+                ctx->at_boundary = 1;
+                i += used;
+                continue;
+            }
         }
-        if (left >= 4 && memcmp(p, "<-->", 4) == 0) { push(ctx, "\xe2\x86\x94", 3); i += 4; continue; }  /* ↔ */
-        if (left >= 4 && memcmp(p, "<==>", 4) == 0) { push(ctx, "\xe2\x87\x94", 3); i += 4; continue; }  /* ⇔ */
-        if (left >= 3 && memcmp(p, "<--", 3) == 0)  { push(ctx, "\xe2\x86\x90", 3); i += 3; continue; }  /* ← */
-        if (left >= 3 && memcmp(p, "==>", 3) == 0)  { push(ctx, "\xe2\x87\x92", 3); i += 3; continue; }  /* ⇒ */
-        if (left >= 3 && memcmp(p, "<==", 3) == 0)  { push(ctx, "\xe2\x87\x90", 3); i += 3; continue; }  /* ⇐ */
 
-        if (left >= 3 && p[0] == '.' && p[1] == '.' && p[2] == '.') {
-            push(ctx, "\xe2\x80\xa6", 3);  i += 3; continue;   /* … */
-        }
-        /* Exactly two hyphens. Three or more is a run — `a---b` stays as it
-         * is — and that means looking BEHIND as well as ahead, or the second
-         * and third hyphens of a run pair up into one. */
-        if (left >= 2 && p[0] == '-' && p[1] == '-' &&
-            !(left >= 3 && p[2] == '-') && !(i > 0 && text[i - 1] == '-')) {
-            push(ctx, "\xe2\x80\x94", 3);  i += 2; continue;   /* — */
+        /*
+         * `--` is an em dash and `---` is not: three hyphens stay literal,
+         * because a run of them is a thematic break's business. That means
+         * looking BEHIND as well as ahead, or the second and third hyphens of
+         * a run pair up into one.
+         *
+         * Each of these leaves at_boundary false — what follows punctuation is
+         * no more the start of a word than what follows a full stop.
+         */
+        {
+            const char *drawn = NULL;
+            size_t used = 0;
+            if (left >= 4 && memcmp(p, "<-->", 4) == 0)      { drawn = "\xe2\x86\x94"; used = 4; }
+            else if (left >= 4 && memcmp(p, "<==>", 4) == 0) { drawn = "\xe2\x87\x94"; used = 4; }
+            else if (left >= 3 && memcmp(p, "-->", 3) == 0)  { drawn = "\xe2\x86\x92"; used = 3; }
+            else if (left >= 3 && memcmp(p, "<--", 3) == 0)  { drawn = "\xe2\x86\x90"; used = 3; }
+            else if (left >= 3 && memcmp(p, "==>", 3) == 0)  { drawn = "\xe2\x87\x92"; used = 3; }
+            else if (left >= 3 && memcmp(p, "<==", 3) == 0)  { drawn = "\xe2\x87\x90"; used = 3; }
+            else if (left >= 3 && p[0] == '.' && p[1] == '.' && p[2] == '.') { drawn = "\xe2\x80\xa6"; used = 3; }
+            else if (left >= 2 && p[0] == '-' && p[1] == '-' &&
+                     !(left >= 3 && p[2] == '-') && !(i > 0 && text[i - 1] == '-')) {
+                drawn = "\xe2\x80\x94";
+                used = 2;
+            }
+            if (drawn) {
+                push(ctx, drawn, 3);
+                ctx->at_boundary = 0;
+                i += used;
+                continue;
+            }
         }
 
         if ((p[0] == '#' || p[0] == '@') && left > 1) {
@@ -335,6 +379,7 @@ static void scan(Ctx *ctx, const char *text, size_t len) {
                 mdy_set_string(ctx->doc, a, "href", href, strlen(href));
                 mdy_append(a, mdy_new_text(ctx->doc, p, n));
                 mdy_append(ctx->parent, a);
+                ctx->at_boundary = 0;
                 i += n;
                 continue;
             }
@@ -348,11 +393,15 @@ static void scan(Ctx *ctx, const char *text, size_t len) {
                 mdy_set_string(ctx->doc, a, "href", p, n);
                 mdy_append(a, mdy_new_text(ctx->doc, p, n));
                 mdy_append(ctx->parent, a);
+                ctx->at_boundary = 1;
                 i += n;
                 continue;
             }
         }
 
+        /* Only whitespace leaves a boundary behind — a bracket does not, and
+         * treating one as if it did made emoticons out of ordinary prose. */
+        ctx->at_boundary = *p == ' ' || *p == '\t' || *p == '\n' || *p == '\r';
         push(ctx, p, 1);
         i++;
     }
@@ -376,9 +425,10 @@ void mdy_parse_inline(mdy_doc *doc, mdy_node *parent, const char *text, size_t l
         }
     }
 
-    Ctx ctx = { .doc = doc, .parent = parent, .len = 0, .cap = len + 1,
-                .urls = urls, .url_count = url_count };
-    ctx.buf = mdy_alloc(&doc->arena, len + 1);
+    size_t cap = len * 4 + 8;   /* see push() */
+    Ctx ctx = { .doc = doc, .parent = parent, .len = 0, .cap = cap,
+                .urls = urls, .url_count = url_count, .at_boundary = 1 };
+    ctx.buf = mdy_alloc(&doc->arena, cap);
     if (!ctx.buf) return;
     scan(&ctx, text, len);
 }
@@ -409,19 +459,28 @@ static const char *slug_of(mdy_doc *doc, const char *s, size_t len, size_t *out_
     if (!out) { *out_len = 0; return NULL; }
 
     size_t o = 0;
+    int was_space = 0;
     for (size_t i = 0; i < len;) {
         uint32_t cp;
         size_t width = mdy_utf8_decode(s + i, len - i, &cp);
         i += width;
 
-        /* `\s+` becomes one hyphen. That includes the no-break space a copied
-         * corpus is full of, and the Unicode spaces around it. */
-        if (cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r' || cp == 0x00A0 ||
-            (cp >= 0x2000 && cp <= 0x200A) || cp == 0x2028 || cp == 0x2029 ||
-            cp == 0x202F || cp == 0x205F || cp == 0x3000) {
-            if (o && out[o - 1] != '-') out[o++] = '-';
+        int space = cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r' || cp == 0x00A0 ||
+                    (cp >= 0x2000 && cp <= 0x200A) || cp == 0x2028 || cp == 0x2029 ||
+                    cp == 0x202F || cp == 0x205F || cp == 0x3000;
+        if (space) {
+            /*
+             * `\s+` becomes ONE hyphen — a run of whitespace, not "whitespace
+             * with a hyphen already behind it". The two differ whenever a
+             * deleted character sits between two spaces: `plain | label`
+             * resolves to `plain--label`, because the replacement happens
+             * before the deletion and leaves two runs, not one.
+             */
+            if (!was_space) out[o++] = '-';
+            was_space = 1;
             continue;
         }
+        was_space = 0;
 
         if (cp == '-' || cp == '/' || cp == '.' || cp == '_' || cp == '#' ||
             mdy_is_letter_or_number_cp(cp)) {
@@ -483,6 +542,7 @@ static size_t wiki_link(Ctx *ctx, const char *p, size_t left) {
         mdy_append(a, mdy_new_text(ctx->doc, buf, strlen(buf)));
         mdy_append(sup, a);
         mdy_append(ctx->parent, sup);
+        ctx->at_boundary = 0;
         return close + 2;
     }
 
@@ -492,6 +552,11 @@ static size_t wiki_link(Ctx *ctx, const char *p, size_t left) {
     size_t target_len = 0;
 
     for (size_t j = 0; j < body_len; j++) {
+        /* `\|` is a literal pipe in the label, not the separator. A corpus of
+         * citations is full of them — "…desert \| Aeon Essays" — and taking
+         * the first pipe regardless made the href the whole rest of the
+         * construct, which then swallowed every link after it on that line. */
+        if (body[j] == '\\') { j++; continue; }
         if (body[j] != '|') continue;
         label = body;
         label_len = j;
@@ -504,8 +569,18 @@ static size_t wiki_link(Ctx *ctx, const char *p, size_t left) {
     if (label_len == 0) return 0;
 
     if (!target) {
+        /* Resolved from the label's TEXT, which is the label with its escapes
+         * taken off — `plain \| label` resolves as `plain | label` does. */
+        char *plain = mdy_alloc(&ctx->doc->arena, label_len + 1);
+        size_t plain_len = 0;
+        for (size_t j = 0; j < label_len; j++) {
+            if (label[j] == '\\' && j + 1 < label_len) j++;
+            plain[plain_len++] = label[j];
+        }
+        plain[plain_len] = '\0';
+
         size_t n = 0;
-        target = slug_of(ctx->doc, label, label_len, &n);
+        target = slug_of(ctx->doc, plain, plain_len, &n);
         target_len = n;
         if (!target || n == 0) return 0;
     }
@@ -525,5 +600,6 @@ static size_t wiki_link(Ctx *ctx, const char *p, size_t left) {
     unwrap_links(a);
 
     mdy_append(ctx->parent, a);
+    ctx->at_boundary = 1;
     return close + 2;
 }

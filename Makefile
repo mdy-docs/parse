@@ -11,7 +11,7 @@ CC      ?= cc
 AR      ?= ar
 CFLAGS  += -std=c11 -Wall -Wextra -Wshadow -O2 -g -Iinclude -Isrc -Ithird_party/baru-re/include
 
-SRCS := src/arena.c src/ast.c src/attrs.c src/unicode.c src/footnote.c src/inline.c src/block.c
+SRCS := src/arena.c src/ast.c src/attrs.c src/unicode.c src/emoji.c src/footnote.c src/inline.c src/block.c
 OBJS := $(patsubst src/%.c,build/%.o,$(SRCS))
 
 # Where mdy-docs lives, for the comparison harness. Nothing in the library
@@ -36,7 +36,10 @@ build/smoke: test/smoke.c build/libmdyast.a
 	$(CC) $(CFLAGS) test/smoke.c build/libmdyast.a -o $@
 
 .PHONY: all test compare bench clean
-test: build/smoke
+# build/mdyast too, though the checks do not use it: every probe reached for it
+# by hand at some point, found yesterday's binary, and reported a bug that had
+# already been fixed. Building it here costs a second and stops that.
+test: build/smoke build/mdyast
 	@./build/smoke
 
 # The check that actually matters. A 4,441-line parser is not ported by

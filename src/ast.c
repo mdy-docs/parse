@@ -101,7 +101,7 @@ void mdy_add_class(mdy_doc *doc, mdy_node *el, const char *class_name) {
 
 /* ---- a growable output buffer -------------------------------------------- */
 
-typedef struct { char *s; size_t len, cap; } Out;
+typedef struct { char *s; size_t len, cap; int positions; } Out;
 
 static int out_put(Out *o, const char *s, size_t n) {
     if (o->len + n + 1 > o->cap) {
@@ -196,10 +196,32 @@ static int emit(Out *o, const mdy_node *n) {
         if (c != n->first && out_put(o, ",", 1) < 0) return -1;
         if (emit(o, c) < 0) return -1;
     }
-    return out_str(o, "]}");
+    if (out_put(o, "]", 1) < 0) return -1;
+
+    /*
+     * The unist position, LAST — which is where JSON.stringify puts it, since
+     * hast builds the node before attaching one. Only block elements have it;
+     * a zero line means none.
+     */
+    if (o->positions && n->line) {
+        char buf[128];
+        snprintf(buf, sizeof buf,
+                 ",\"position\":{\"start\":{\"line\":%u,\"column\":%u},"
+                 "\"end\":{\"line\":%u,\"column\":%u}}",
+                 n->line, n->column, n->end_line, n->end_column);
+        if (out_str(o, buf) < 0) return -1;
+    }
+    return out_put(o, "}", 1);
 }
 
 char *mdy_to_json(const mdy_node *node) {
+    Out o = { .positions = 1 };
+    if (!node || emit(&o, node) < 0) { free(o.s); return NULL; }
+    return o.s ? o.s : calloc(1, 1);
+}
+
+/** The same, without positions — structure alone. */
+char *mdy_to_json_bare(const mdy_node *node) {
     Out o = { 0 };
     if (!node || emit(&o, node) < 0) { free(o.s); return NULL; }
     return o.s ? o.s : calloc(1, 1);

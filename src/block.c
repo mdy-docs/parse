@@ -25,6 +25,7 @@ void mdy_options_default(mdy_options *out) {
     out->emphasis = 1;
     out->max_heading = 6;
     out->line_offset = 0;
+    out->positions = 1;
 }
 
 /* ---- lines --------------------------------------------------------------- */
@@ -48,6 +49,9 @@ static mdy_line *split_lines(mdy_doc *doc, const char *text, size_t len, size_t 
         line->text = text + start;
         line->len = end - start;
         line->number = (uint32_t)out + 1 + doc->options.line_offset;
+        /* Before the indent is stripped: a position's end column counts from
+         * the start of the line, indentation and all. */
+        line->units = (uint32_t)mdy_utf16_length(text + start, end - start);
 
         size_t indent = 0, k = 0;
         while (k < line->len && (line->text[k] == ' ' || line->text[k] == '\t')) {
@@ -64,6 +68,14 @@ static mdy_line *split_lines(mdy_doc *doc, const char *text, size_t len, size_t 
     }
     *count = out;
     return lines;
+}
+
+void mdy_set_position(mdy_node *node, const mdy_line *lines, size_t from, size_t to) {
+    if (!node) return;
+    node->line = lines[from].number;
+    node->column = 1;
+    node->end_line = lines[to].number;
+    node->end_column = lines[to].units + 1;
 }
 
 /* ---- small helpers ------------------------------------------------------- */
@@ -351,6 +363,7 @@ static size_t parse_element(mdy_doc *doc, mdy_node *parent,
         trim(&content, &content_len);
         mdy_parse_inline(doc, el, content, content_len);
     }
+    mdy_set_position(el, lines, i, end > i + 1 ? end - 1 : i);
     if (end > i + 1) {
         /* The children's own column, so one of them being deeper than the
          * others is what makes a div rather than all of them. */
@@ -438,7 +451,8 @@ static size_t table_rows(const mdy_line *lines, size_t count, size_t i) {
 }
 
 static void add_cell(mdy_doc *doc, mdy_node *row, const char *tag, size_t tag_len,
-                     const char *text, size_t len, int align) {
+                     const char *text, size_t len, int align,
+                     const mdy_line *lines, size_t row_line) {
     mdy_node *cell = mdy_new_element(doc, tag, tag_len);
     if (align != ALIGN_NONE) {
         const char *style = align == ALIGN_LEFT ? "text-align: left"
@@ -447,6 +461,7 @@ static void add_cell(mdy_doc *doc, mdy_node *row, const char *tag, size_t tag_le
         mdy_set_string(doc, cell, "style", style, strlen(style));
     }
     mdy_parse_inline(doc, cell, text, len);
+    mdy_set_position(cell, lines, row_line, row_line);
     mdy_append(row, mdy_new_text(doc, "\n", 1));
     mdy_append(row, cell);
 }
@@ -465,10 +480,12 @@ static size_t parse_table(mdy_doc *doc, mdy_node *parent, const mdy_line *lines,
     mdy_node *thead = mdy_new_element(doc, "thead", 5);
     mdy_append(thead, mdy_new_text(doc, "\n", 1));
     mdy_node *head_row = mdy_new_element(doc, "tr", 2);
-    for (size_t c = 0; c < columns; c++) add_cell(doc, head_row, "th", 2, starts[c], lens[c], align[c]);
+    for (size_t c = 0; c < columns; c++) add_cell(doc, head_row, "th", 2, starts[c], lens[c], align[c], lines, i);
     mdy_append(head_row, mdy_new_text(doc, "\n", 1));
+    mdy_set_position(head_row, lines, i, i);
     mdy_append(thead, head_row);
     mdy_append(thead, mdy_new_text(doc, "\n", 1));
+    mdy_set_position(thead, lines, i, i);
     mdy_append(table, thead);
     mdy_append(table, mdy_new_text(doc, "\n", 1));
 
@@ -479,15 +496,18 @@ static size_t parse_table(mdy_doc *doc, mdy_node *parent, const mdy_line *lines,
             size_t n = split_cells(&lines[r], starts, lens, 64);
             mdy_node *tr = mdy_new_element(doc, "tr", 2);
             for (size_t c = 0; c < n && c < columns; c++)
-                add_cell(doc, tr, "td", 2, starts[c], lens[c], align[c]);
+                add_cell(doc, tr, "td", 2, starts[c], lens[c], align[c], lines, r);
             mdy_append(tr, mdy_new_text(doc, "\n", 1));
+            mdy_set_position(tr, lines, r, r);
             mdy_append(tbody, tr);
             mdy_append(tbody, mdy_new_text(doc, "\n", 1));
         }
+        mdy_set_position(tbody, lines, i + 2, i + rows - 1);
         mdy_append(table, tbody);
         mdy_append(table, mdy_new_text(doc, "\n", 1));
     }
 
+    mdy_set_position(table, lines, i, i + rows - 1);
     separate(doc, parent);
     mdy_append(parent, table);
     return i + rows;
@@ -534,6 +554,7 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
             size_t inner = lines[i].indent;
             mdy_node *div = mdy_new_element(doc, "div", 3);
             mdy_parse_block(doc, div, lines + i, j - i, inner);
+            mdy_set_position(div, lines, i, j > i ? j - 1 : i);
             separate(doc, parent);
             mdy_append(parent, div);
             produced = 1;
@@ -544,7 +565,9 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
         /* --- thematic break: three or more of - * _ alone --- */
         if ((all_of(l, '-') || all_of(l, '*') || all_of(l, '_')) && l->len >= 3) {
             separate(doc, parent);
-            mdy_append(parent, mdy_new_element(doc, "hr", 2));
+            mdy_node *rule = mdy_new_element(doc, "hr", 2);
+            mdy_set_position(rule, lines, i, i);
+            mdy_append(parent, rule);
             produced = 1;
             i++;
             continue;
@@ -565,6 +588,7 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
             mdy_node *h = mdy_new_element(doc, tag, 2);
             set_heading_id(doc, h, body, body_len);
             mdy_parse_inline(doc, h, body, body_len);
+            mdy_set_position(h, lines, i, i);
             separate(doc, parent);
             mdy_append(parent, h);
             produced = 1;
@@ -612,6 +636,11 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
                 }
                 if (o) mdy_append(code, mdy_new_text(doc, body, o));
                 mdy_append(pre, code);
+                /* The fence's whole span, closing line included — and `code`
+                 * carries the same one, which is what the JavaScript does. */
+                size_t last_line = j < count ? j : (j > 0 ? j - 1 : 0);
+                mdy_set_position(pre, lines, i, last_line);
+                mdy_set_position(code, lines, i, last_line);
                 separate(doc, parent);
                 mdy_append(parent, pre);
                 produced = 1;
@@ -637,6 +666,7 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
         int ordered = 0;
         size_t marker = list_marker(l, &ordered);
         if (marker) {
+            size_t start_line = i;
             mdy_node *list = mdy_new_element(doc, ordered ? "ol" : "ul", 2);
             mdy_append(list, mdy_new_text(doc, "\n", 1));
             int any_task = 0;
@@ -717,6 +747,7 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
                     mdy_parse_block(doc, item, lines + plain_end, item_end - plain_end, inner);
                 }
 
+                mdy_set_position(item, lines, i, item_end > i ? item_end - 1 : i);
                 mdy_append(list, item);
                 mdy_append(list, mdy_new_text(doc, "\n", 1));
                 i = item_end;
@@ -725,6 +756,7 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
             /* The list is marked once, after its items, because one task item
              * makes the whole list a task list. */
             if (any_task) mdy_add_class(doc, list, "contains-task-list");
+            mdy_set_position(list, lines, start_line, i > start_line ? i - 1 : start_line);
             separate(doc, parent);
             mdy_append(parent, list);
             produced = 1;
@@ -779,6 +811,7 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
             mdy_node *h = mdy_new_element(doc, tag, 2);
             set_heading_id(doc, h, probe, probe_len);
             mdy_parse_inline(doc, h, probe, probe_len);
+            mdy_set_position(h, lines, i, j);
             separate(doc, parent);
             mdy_append(parent, h);
             produced = 1;
@@ -788,7 +821,11 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
 
         if (probe_len) {
             separate(doc, parent);
-            add_paragraph(doc, parent, joined, o);
+            mdy_node *before = parent->last;
+            if (add_paragraph(doc, parent, joined, o)) {
+                mdy_node *made = before ? before->next : parent->first;
+                mdy_set_position(made, lines, i, j > i ? j - 1 : i);
+            }
             produced = 1;
         }
         i = j;
@@ -827,9 +864,63 @@ static void collect_definitions(mdy_doc *doc, mdy_line *lines, size_t count) {
         if (k + 2 >= l->len || l->text[k] != ']' || l->text[k + 1] != ']' || l->text[k + 2] != ':') continue;
         k += 3;
 
-        const char *content = l->text + k;
-        size_t content_len = l->len - k;
+        /*
+         * A definition's content runs on: following non-blank lines belong to
+         * it, joined with a space exactly as a paragraph's do, and it ends at
+         * a blank line. Taking only the marker line left every continuation
+         * behind as a stray paragraph in the body of the document — which is
+         * what `p` being 26 too high was, and why several documents showed
+         * footnote prose where their Footnotes section should have been.
+         */
+        const char *head = l->text + k;
+        size_t head_len = l->len - k;
+        trim(&head, &head_len);
+
+        size_t last = i;
+        size_t total = head_len;
+        while (last + 1 < count && !lines[last + 1].blank) {
+            /* Another definition starts its own; it does not continue this. */
+            const mdy_line *next = &lines[last + 1];
+            if (next->len > 4 && next->text[0] == '[' && next->text[1] == '[') {
+                size_t probe = 2;
+                while (probe < next->len && (next->text[probe] == ' ' || next->text[probe] == '\t')) probe++;
+                if (probe < next->len && next->text[probe] == '^') break;
+            }
+            last++;
+            total += next->len + 1;
+        }
+
+        char *joined = mdy_alloc(&doc->arena, total + 1);
+        size_t jo = 0;
+        memcpy(joined, head, head_len);
+        jo = head_len;
+        for (size_t r = i + 1; r <= last; r++) {
+            if (jo) joined[jo++] = ' ';
+            memcpy(joined + jo, lines[r].text, lines[r].len);
+            jo += lines[r].len;
+        }
+        joined[jo] = '\0';
+
+        const char *content = joined;
+        size_t content_len = jo;
         trim(&content, &content_len);
+
+        /*
+         * A LATER definition with the same id replaces an earlier one. The
+         * reference corpus leans on this hard — one file has 402 definitions
+         * with 360 distinct ids — and keeping the first instead of the last
+         * cost 135 links, because the definitions being shadowed were the
+         * short ones and the definitions doing the shadowing were full of
+         * citations.
+         */
+        mdy_footnote *existing = mdy_footnote_find(doc, l->text + id_start, id_len);
+        if (existing) {
+            existing->content = mdy_strdup_n(&doc->arena, content, content_len);
+            existing->content_len = content_len;
+            for (size_t r = i; r <= last; r++) { lines[r].len = 0; lines[r].blank = 1; }
+            i = last;
+            continue;
+        }
 
         if (doc->note_count == doc->note_cap) {
             size_t grown = doc->note_cap ? doc->note_cap * 2 : 16;
@@ -846,8 +937,8 @@ static void collect_definitions(mdy_doc *doc, mdy_line *lines, size_t count) {
         note->number = 0;
         note->refs = 0;
 
-        l->len = 0;
-        l->blank = 1;
+        for (size_t r = i; r <= last; r++) { lines[r].len = 0; lines[r].blank = 1; }
+        i = last;
     }
 }
 

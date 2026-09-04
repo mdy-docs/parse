@@ -148,6 +148,15 @@ size_t mdy_utf16_length(const char *s, size_t len);
 size_t mdy_to_utf16(const char *s, size_t len, uint16_t *out, size_t cap);
 size_t mdy_from_utf16(const uint16_t *units, size_t count, char *out, size_t cap);
 
+/* ---- emoji (src/emoji.c) -------------------------------------------------- */
+
+/*
+ * An emoji at `p`, or NULL. `at_boundary` says whether this position starts a
+ * word — the run began here, whitespace preceded it, or a marker was just
+ * consumed — which emoticons require and shortcodes do not.
+ */
+const char *mdy_match_emoji(const char *p, size_t left, int at_boundary, size_t *consumed);
+
 /* ---- the stages ---------------------------------------------------------- */
 
 /* One line of the source, already measured. The block parser works on these
@@ -159,7 +168,15 @@ typedef struct {
     size_t indent;      /* columns of leading space, tabs counted as 2 */
     int blank;
     uint32_t number;    /* 1-based line number in the original file */
+    /* The whole line's length in UTF-16 units, indentation included — what a
+     * position's end column is measured in. Kept from before the indent was
+     * stripped, because that is the only point it is still known. */
+    uint32_t units;
 } mdy_line;
+
+/* Give a block element its unist position: from the first of its lines to the
+ * end of the last. */
+void mdy_set_position(mdy_node *node, const mdy_line *lines, size_t from, size_t to);
 
 /*
  * Parse a run of lines as blocks into `parent`.

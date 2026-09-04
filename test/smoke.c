@@ -14,7 +14,10 @@ static int failures = 0;
 
 static void check(const char *what, const char *source, const char *expected, const mdy_options *o) {
     mdy_doc *doc = mdy_parse(source, 0, o);
-    char *json = mdy_to_json(mdy_root(doc));
+    /* Structure alone: these check what the tree IS, and threading a position
+     * through every expectation would bury that. Positions have checks of
+     * their own below. */
+    char *json = mdy_to_json_bare(mdy_root(doc));
     int ok = json && strcmp(json, expected) == 0;
     printf("  %s  %s\n", ok ? "ok  " : "FAIL", what);
     if (!ok) {
@@ -290,6 +293,73 @@ int main(void) {
     check("a slug lowercases beyond ASCII", "[[ Kazimierz Micha\xc5\x81owski ]]",
           ROOT(EL("p", "", EL("a", "\"href\":\"kazimierz-micha\xc5\x82owski\"",
                               TX("Kazimierz Micha\xc5\x81owski")))), &o);
+
+    printf("--- mdyast: unist positions ---\n");
+    {
+        /* Block elements only, and every number here is what mdy-docs emits
+         * for the same source. */
+        mdy_doc *doc = mdy_parse("one two\n\n= Head\n\n- a\n- b", 0, &o);
+        char *json = mdy_to_json(mdy_root(doc));
+        struct { const char *what; const char *needle; } want[] = {
+            { "a paragraph spans its line",
+              "\"position\":{\"start\":{\"line\":1,\"column\":1},\"end\":{\"line\":1,\"column\":8}}" },
+            { "a heading knows which line it was on",
+              "\"position\":{\"start\":{\"line\":3,\"column\":1},\"end\":{\"line\":3,\"column\":7}}" },
+            { "a list spans all of its items",
+              "\"position\":{\"start\":{\"line\":5,\"column\":1},\"end\":{\"line\":6,\"column\":4}}" },
+        };
+        for (size_t k = 0; k < sizeof want / sizeof want[0]; k++) {
+            int ok = strstr(json, want[k].needle) != NULL;
+            printf("  %s  %s\n", ok ? "ok  " : "FAIL", want[k].what);
+            if (!ok) { failures++; printf("      wanted %s\n      in     %s\n", want[k].needle, json); }
+        }
+        free(json);
+        mdy_free(doc);
+
+        /* A column is UTF-16 units, so an astral character counts twice —
+         * `a 𒀀 b` is six units, not five characters and not seven bytes. */
+        doc = mdy_parse("a \xf0\x92\x80\x80 b", 0, &o);
+        json = mdy_to_json(mdy_root(doc));
+        int ok = strstr(json, "\"end\":{\"line\":1,\"column\":7}") != NULL;
+        printf("  %s  a column counts UTF-16 units, not characters\n", ok ? "ok  " : "FAIL");
+        if (!ok) { failures++; printf("      %s\n", json); }
+        free(json);
+        mdy_free(doc);
+
+        /* An indented block still starts at column 1: the column is measured
+         * from the start of the line, indentation included. */
+        doc = mdy_parse("top\n  in", 0, &o);
+        json = mdy_to_json(mdy_root(doc));
+        ok = strstr(json, "\"start\":{\"line\":2,\"column\":1},\"end\":{\"line\":2,\"column\":5}") != NULL;
+        printf("  %s  an indented block starts at column 1, ends past its indent\n", ok ? "ok  " : "FAIL");
+        if (!ok) { failures++; printf("      %s\n", json); }
+        free(json);
+        mdy_free(doc);
+
+        /* Inline elements carry none, and neither does the root. */
+        doc = mdy_parse("a **b** c", 0, &o);
+        json = mdy_to_json(mdy_root(doc));
+        const char *strong = strstr(json, "\"tagName\":\"strong\"");
+        const char *after = strong ? strstr(strong, "\"position\"") : NULL;
+        const char *next_p = strong ? strstr(strong, "}]}") : NULL;
+        ok = strong && (!after || (next_p && after > next_p));
+        printf("  %s  an inline element carries no position\n", ok ? "ok  " : "FAIL");
+        if (!ok) { failures++; printf("      %s\n", json); }
+        free(json);
+        mdy_free(doc);
+
+        /* lineOffset points positions at the real file rather than at whatever
+         * slice of it was handed over. */
+        mdy_options shifted = o;
+        shifted.line_offset = 10;
+        doc = mdy_parse("hi", 0, &shifted);
+        json = mdy_to_json(mdy_root(doc));
+        ok = strstr(json, "\"start\":{\"line\":11,\"column\":1}") != NULL;
+        printf("  %s  line_offset moves them to the original file\n", ok ? "ok  " : "FAIL");
+        if (!ok) { failures++; printf("      %s\n", json); }
+        free(json);
+        mdy_free(doc);
+    }
 
     printf("\n%s\n", failures ? "FAILURES" : "all checks passed");
     return failures ? 1 : 0;

@@ -40,10 +40,9 @@ const { fromMdy } = await import(join(mdyDocs, 'src/parse/block.js'));
  * Both trees reduced to the same shape, so a difference in the report is a
  * difference in the PARSE and never in how one side happened to spell it.
  *
- * The JS tree carries `position` (source offsets) and `data` on some nodes;
- * the C does not produce those yet, so they are dropped from both. Everything
- * that survives — type, tagName, properties, children, text — is what
- * mdy-docs' own processing actually reads.
+ * Positions are compared too, now that the C produces them — they are part of
+ * what mdy-docs reads (it reports warnings against them), so leaving them out
+ * of the comparison would be leaving out a third of what a node says.
  */
 function canon(node) {
   if (node.type === 'text') return { type: 'text', value: node.value };
@@ -54,12 +53,19 @@ function canon(node) {
     if (v === undefined || v === null || v === false) continue;
     props[key] = v;
   }
-  return {
+  const out = {
     type: 'element',
     tagName: node.tagName,
     properties: props,
     children: (node.children ?? []).map(canon),
   };
+  if (node.position) {
+    out.position = {
+      start: { line: node.position.start.line, column: node.position.start.column },
+      end: { line: node.position.end.line, column: node.position.end.column },
+    };
+  }
+  return out;
 }
 
 /** The same reduction over the C's JSON, whose property order is insertion
@@ -233,6 +239,28 @@ for (let i = 0; i < files.length; i++) {
 }
 console.log(`${sameText}/${files.length} documents with identical text ` +
             `(${(matchChars / textChars * 100).toFixed(2)}% of characters agree up to the first difference)`);
+
+/*
+ * Positions on their own. They fail independently of everything else — a tree
+ * can have the right shape and the wrong line numbers — so a number for them
+ * alone is worth having.
+ */
+const positionsOf = (n, out = []) => {
+  if (n.type === 'element' && n.position) {
+    out.push(`${n.tagName}:${n.position.start.line},${n.position.start.column}-${n.position.end.line},${n.position.end.column}`);
+  }
+  for (const c of n.children ?? []) positionsOf(c, out);
+  return out;
+};
+let posSame = 0, posTotal = 0;
+for (let i = 0; i < files.length; i++) {
+  const jsPos = positionsOf(canon(fromMdy(readFileSync(files[i], 'utf8'), options)));
+  const cPos = new Set(positionsOf(canonJson(lines[i])));
+  posTotal += jsPos.length;
+  for (const p of jsPos) if (cPos.has(p)) posSame++;
+}
+console.log(`${posSame} of the JavaScript's ${posTotal} positions match ` +
+            `(${(posSame / posTotal * 100).toFixed(1)}%)`);
 
 if (rows.length) {
   console.log('\nby tag, where the counts differ (JS - C):');

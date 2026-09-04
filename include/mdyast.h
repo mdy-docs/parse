@@ -82,11 +82,21 @@ typedef struct mdy_node {
     struct mdy_node *first;  /* first child */
     struct mdy_node *last;   /* last child, so appending stays O(1) */
     struct mdy_node *next;   /* next sibling */
-    /* 1-based, and pointing at the ORIGINAL file when lineOffset is set —
-     * mdy-docs reports warnings against these, so they are part of the
-     * contract rather than a debugging aid. */
+    /*
+     * unist position, on BLOCK elements only — inline ones (strong, em, a) do
+     * not carry one, nor does the root, nor the synthesised `<article>` and
+     * footnotes `<section>`, which come from no source line. Zero means none.
+     *
+     * 1-based, and pointing at the ORIGINAL file when `line_offset` is set.
+     * Columns are UTF-16 code units, counted from the start of the line
+     * INCLUDING its indentation — which is why an indented block still starts
+     * at column 1 rather than at its indent. mdy-docs reports warnings against
+     * these, so they are part of the contract rather than a debugging aid.
+     */
     uint32_t line;
     uint32_t column;
+    uint32_t end_line;
+    uint32_t end_column;
 } mdy_node;
 
 /* ---- parsing ------------------------------------------------------------- */
@@ -104,6 +114,10 @@ typedef struct {
     int emphasis;       /* the default inline marker table */
     int max_heading;    /* deeper headings clamp to this; 0 means 6 */
     uint32_t line_offset; /* added to every position */
+    /* Whether the emitter writes unist positions. On by default, matching
+     * mdy-docs; off makes the JSON about structure alone, which is what a
+     * test comparing trees usually wants. */
+    int positions;
 } mdy_options;
 
 void mdy_options_default(mdy_options *out);
@@ -139,6 +153,10 @@ void mdy_free(mdy_doc *doc);
  * Caller frees. NULL on allocation failure.
  */
 char *mdy_to_json(const mdy_node *node);
+
+/* The same without unist positions — the tree's structure alone, which is what
+ * a test comparing shapes wants. */
+char *mdy_to_json_bare(const mdy_node *node);
 
 #ifdef __cplusplus
 }

@@ -49,17 +49,17 @@ two orders of magnitude on this stage.
 `make compare` builds both and diffs them:
 
 ```
-  27/87 documents byte-identical
-  284487 nodes against the JavaScript's 284872 (99.9%)
-  33/87 documents with identical text
-  99.98% of hrefs are ones the JavaScript also produces
+  40/87 documents byte-identical
+  284832 nodes against the JavaScript's 284872 (100%)
+  58/87 documents with identical text
+  20675 of the JavaScript's 20681 unist positions match (100.0%)
 ```
 
 Whole-document equality is a hard bar for a 70 KB Wikipedia article — one rule
-missing anywhere makes the whole document differ — so the other three numbers
-are what movement looks like while the work is in progress. What is left is
-small and the harness names it: `a` −135, `p` +26, `em` −19 and `sup` +5, out
-of 49,211, 14,217, 5,842 and 15,846.
+missing anywhere makes the whole document differ — so the other numbers are
+what movement looks like. What is left is now single digits per tag: `div` −6,
+`p` −4, `li` −3, `em` −2, `a` −1, `sup` −1, `ul` +1, out of 40, 14,217, 10,201,
+5,842, 49,211, 15,846 and 492.
 
 ## What it does today
 
@@ -76,6 +76,8 @@ and the harness is as much the point of this repo as the parser is.
 | **Footnotes** | references, definitions, numbering by first reference, the collected `<section>` with per-reference backrefs |
 | **Sanitisation** | the element allowlist, per-element attribute allowlists, and the `href`/`src` protocol check |
 | **Attributes** | hast property naming (`class` → `className`, `colspan` → `colSpan`, `data-x` → `dataX`), with `className` as a list |
+| **Emoji** | `:rocket:` and `:)`, from tables generated out of the same `gemoji` and `emoticon` packages mdy-docs imports — 2,235 entries, with the boundary rules that keep `12:30:45` and `http://x` from becoming faces |
+| **Positions** | unist `{line, column}` on block elements, columns in UTF-16 units, `line_offset` honoured |
 | **Unicode** | UTF-8 throughout, decoded strictly; `\p{L}`, `\p{N}` and case mapping from baru-re's generated UCD tables rather than approximated; a UTF-16 conversion for the JavaScript boundary, astral characters and all |
 | **Tree** | the three node types the corpus produces, arena-allocated, with interned tag and property names |
 
@@ -88,13 +90,11 @@ and the harness is as much the point of this repo as the parser is.
   afterwards, in the lamassu VM, on the tree this produces. Reimplementing
   lowlight in C would be a large piece of work to move a stage that does not
   need to move.
-- **Emoji.** `:rocket:` and `:)` both become characters, and both need tables —
-  the shortcode one is large. The corpus has 20 of them.
-- **Positions.** Nodes carry `line`/`column` fields but the emitter does not
-  write them, and the harness drops them from both sides. mdy-docs reports
-  warnings against them, so they are part of the contract eventually.
-- The last **0.3%** of links and paragraphs, which the harness names precisely
-  and which is what `make compare --first` is for.
+- **`%` script lines**, which run JavaScript. That is the document engine's job
+  rather than the parser's, and it needs a JS engine — which is exactly what
+  the host embedding this already has.
+- The last handful of nodes per tag, which the harness names precisely and
+  which is what `make compare --first` is for.
 
 ## Build
 
