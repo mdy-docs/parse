@@ -64,29 +64,67 @@ static const Marker *marker_at(const char *p, size_t left) {
  * prose is a marker.
  */
 static int host_length(const char *p, size_t left) {
-    size_t n = 0, dots = 0, label = 0;
+    size_t n = 0, dots = 0;
+    size_t label_start = 0;      /* where the current label began */
+    size_t last_dot = 0;         /* the position of the most recent dot */
+    int label_hyphen = 0;        /* whether the current label holds one */
+    int prev_label_hyphen = 0;   /* …and whether the one before it did */
+
     while (n < left) {
         char c = p[n];
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-') {
-            label++;
+        if (c == '.') {
+            if (n == label_start) break;   /* two dots running, or a leading one */
+            dots++;
+            last_dot = n;
+            n++;
+            label_start = n;
+            prev_label_hyphen = label_hyphen;
+            label_hyphen = 0;
+            continue;
+        }
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
             n++;
             continue;
         }
+        if (c == '-') { label_hyphen = 1; n++; continue; }
         if ((unsigned char)c >= 0x80) {
-            /* A host may hold any letter — `//rꜥ-qdy.t//` is a link in this
-             * corpus — so the whole character is consumed, not its lead byte. */
+            /* A host may hold any letter — `//ḥw.t//` is a link in this corpus
+             * — so the whole character is consumed, not its lead byte. */
             uint32_t cp;
             size_t width = mdy_utf8_decode(p + n, left - n, &cp);
             if (!mdy_is_letter_or_number_cp(cp)) break;
-            label++;
             n += width;
             continue;
         }
-        if (c == '.' && label > 0) { dots++; label = 0; n++; continue; }
         break;
     }
-    /* A host needs a dot and a final label that looks like a TLD. */
-    if (dots == 0 || label < 2) return 0;
+
+    if (dots == 0) return 0;
+
+    /*
+     * The rules linkify actually applies, worked out by asking it rather than
+     * by reading it, because both are surprising:
+     *
+     *   A TRAILING DOT is not part of the host — `//E.J. Brill` links `//E.J`,
+     *   which is how a sentence's full stop stays out of the URL.
+     *
+     *   THE LAST LABEL MAY NOT CONTAIN A HYPHEN. `//a.bc//` is a link and
+     *   `//a.b-c//` is not, which is what makes `//ḥw.t-k3-Ptḥ//` emphasis
+     *   while `//wꜣs.t//` is a link. There is no TLD list involved — a
+     *   one-character last label is fine — so this is the only thing standing
+     *   between a transliteration and a URL.
+     */
+    if (n == label_start) {
+        /*
+         * Ended on a dot. What comes before it is the host — but only if that
+         * is still a host in its own right: it needs a dot of its own, and its
+         * own last label must not hold a hyphen. `//E.J.` gives `//E.J`;
+         * `//word.` gives nothing, because `word` has no dot in it.
+         */
+        if (dots < 2 || prev_label_hyphen) return 0;
+        return (int)last_dot;
+    }
+    if (label_hyphen) return 0;
     return (int)n;
 }
 
@@ -106,7 +144,10 @@ static size_t url_length(const char *p, size_t left) {
     size_t n = 0;
     while (n < left) {
         unsigned char c = (unsigned char)p[n];
-        if (c <= ' ' || c == '<' || c == '>' || c == '"') break;
+        /* A bracket ends it: `//host//,[[ Ur ]]` is a URL and then a wiki
+         * link, and swallowing the `[[` made the href nonsense and lost the
+         * link. */
+        if (c <= ' ' || c == '<' || c == '>' || c == '"' || c == '[' || c == ']') break;
         n++;
     }
     while (n > 0) {
@@ -187,7 +228,6 @@ static void flush(Ctx *ctx) {
     ctx->len = 0;
 }
 
-static const char *slug_of(mdy_doc *doc, const char *s, size_t len, size_t *out_len);
 static size_t wiki_link(Ctx *ctx, const char *p, size_t left);
 
 /*
@@ -345,7 +385,15 @@ static void scan(Ctx *ctx, const char *text, size_t len) {
             else if (left >= 3 && memcmp(p, "<--", 3) == 0)  { drawn = "\xe2\x86\x90"; used = 3; }
             else if (left >= 3 && memcmp(p, "==>", 3) == 0)  { drawn = "\xe2\x87\x92"; used = 3; }
             else if (left >= 3 && memcmp(p, "<==", 3) == 0)  { drawn = "\xe2\x87\x90"; used = 3; }
-            else if (left >= 3 && p[0] == '.' && p[1] == '.' && p[2] == '.') { drawn = "\xe2\x80\xa6"; used = 3; }
+            /* EXACTLY three dots. A longer run stays as it is — `108....9` is
+             * a citation, not an ellipsis and a full stop — which means
+             * looking behind as well as ahead, the same rule the em dash
+             * needs. */
+            else if (left >= 3 && p[0] == '.' && p[1] == '.' && p[2] == '.' &&
+                     !(left >= 4 && p[3] == '.') && !(i > 0 && text[i - 1] == '.')) {
+                drawn = "\xe2\x80\xa6";
+                used = 3;
+            }
             else if (left >= 2 && p[0] == '-' && p[1] == '-' &&
                      !(left >= 3 && p[2] == '-') && !(i > 0 && text[i - 1] == '-')) {
                 drawn = "\xe2\x80\x94";
@@ -360,15 +408,48 @@ static void scan(Ctx *ctx, const char *text, size_t len) {
         }
 
         if ((p[0] == '#' || p[0] == '@') && left > 1) {
-            /* `#tag` and `@user`. The label keeps its case — `#Tag-One` links
-             * to `/tags/Tag-One` — which is the one thing about these that is
-             * easy to get wrong, since almost everything else here lowercases. */
+            /*
+             * `#tag` and `@user`, matching `[\p{L}_](?:[\p{L}\p{N}_-]*[\p{L}\p{N}_])?`.
+             *
+             * Three parts, and each one earns its place. It must START with a
+             * letter or an underscore, so `#1` in "Lost cities #1: Babylon" is
+             * not a tag — numeric tags cost more than they are worth, and that
+             * heading is real. It may not END with a hyphen. And something
+             * wordlike before it means this is the middle of something else,
+             * so `a#b` is not one either.
+             *
+             * The label keeps its case: `#Tag-One` links to `/tags/Tag-One`,
+             * which is easy to get wrong when almost everything else here
+             * lowercases.
+             */
+            uint32_t before = 0;
+            if (i > 0) {
+                /* The character before, which needs its whole width — one byte
+                 * back into a multi-byte character is not a character. */
+                size_t back = i;
+                while (back > 0 && ((unsigned char)text[back - 1] & 0xC0) == 0x80) back--;
+                if (back > 0) back--;
+                mdy_utf8_decode(text + back, len - back, &before);
+            }
+            int wordlike = before && (before == '_' || mdy_is_letter_or_number_cp(before));
+
             size_t n = 1;
-            while (n < left) {
-                char c = p[n];
-                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                    (c >= '0' && c <= '9') || c == '-' || c == '_') n++;
-                else break;
+            if (!wordlike) {
+                uint32_t first = 0;
+                size_t fw = mdy_utf8_decode(p + 1, left - 1, &first);
+                int starts = first == '_' ||
+                    (mdy_is_letter_or_number_cp(first) && !(first >= '0' && first <= '9'));
+                if (starts) {
+                    n = 1 + fw;
+                    while (n < left) {
+                        uint32_t cp;
+                        size_t w = mdy_utf8_decode(p + n, left - n, &cp);
+                        if (cp == '-' || cp == '_' || mdy_is_letter_or_number_cp(cp)) n += w;
+                        else break;
+                    }
+                    /* It may not end with a hyphen. */
+                    while (n > 1 && p[n - 1] == '-') n--;
+                }
             }
             if (n > 1) {
                 flush(ctx);
@@ -451,7 +532,7 @@ void mdy_parse_inline(mdy_doc *doc, mdy_node *parent, const char *text, size_t l
  * than not, and treating one as punctuation would mangle every non-English
  * label in the corpus.
  */
-static const char *slug_of(mdy_doc *doc, const char *s, size_t len, size_t *out_len) {
+const char *mdy_resolve_slug(mdy_doc *doc, const char *s, size_t len, size_t *out_len) {
     /* Lowercasing can grow a character (ẞ is one byte wider lowered), so the
      * buffer allows for it rather than assuming the output is no longer than
      * the input. */
@@ -495,10 +576,9 @@ static const char *slug_of(mdy_doc *doc, const char *s, size_t len, size_t *out_
     return out;
 }
 
-static void cut(const char **s, size_t *len) {
-    while (*len && (**s == ' ' || **s == '\t')) { (*s)++; (*len)--; }
-    while (*len && ((*s)[*len - 1] == ' ' || (*s)[*len - 1] == '\t')) (*len)--;
-}
+/* JavaScript's notion of whitespace, not C's — see mdy_trim. A label ending
+ * in a no-break space is real, and an ASCII-only trim keeps it. */
+static void cut(const char **s, size_t *len) { mdy_trim(s, len); }
 
 /** Consume `[[ … ]]` at `p`, emitting a link. Returns bytes consumed, or 0 to
  * leave it as text. */
@@ -580,7 +660,7 @@ static size_t wiki_link(Ctx *ctx, const char *p, size_t left) {
         plain[plain_len] = '\0';
 
         size_t n = 0;
-        target = slug_of(ctx->doc, plain, plain_len, &n);
+        target = mdy_resolve_slug(ctx->doc, plain, plain_len, &n);
         target_len = n;
         if (!target || n == 0) return 0;
     }

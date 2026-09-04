@@ -49,17 +49,34 @@ two orders of magnitude on this stage.
 `make compare` builds both and diffs them:
 
 ```
-  40/87 documents byte-identical
-  284832 nodes against the JavaScript's 284872 (100%)
-  58/87 documents with identical text
+  79/87 documents byte-identical
+  284844 nodes against the JavaScript's 284872 (100%)
+  80/87 documents with identical text
   20675 of the JavaScript's 20681 unist positions match (100.0%)
 ```
 
 Whole-document equality is a hard bar for a 70 KB Wikipedia article — one rule
-missing anywhere makes the whole document differ — so the other numbers are
-what movement looks like. What is left is now single digits per tag: `div` −6,
-`p` −4, `li` −3, `em` −2, `a` −1, `sup` −1, `ul` +1, out of 40, 14,217, 10,201,
-5,842, 49,211, 15,846 and 492.
+missing anywhere makes the whole document differ.
+
+**The eight that still differ are eight separate one-offs**, not a class of
+thing left undone, and `make compare` names each. In full, because "90%" hides
+more than it says:
+
+| document | what differs |
+| --- | --- |
+| larsa, thoth | linkify's trailing-punctuation trim. It keeps the comma in `//UD.UNUG^^KI^^//,` and stops before the `)` in `//j3ḥ-ḏḥw.ty)//`; this trims one and keeps the other. |
+| masada | one `<div>` where a paragraph was made — the indentation rule, on a shape not yet worked out. |
+| miletus | one footnote numbered 27 against 30, so a reference is being counted somewhere it should not be. |
+| memphis-egypt | one extra text node, `//-www.behindthename.com`, from a URL boundary. |
+| macedonia | two leading spaces kept by the JavaScript and trimmed here. |
+| byblos | an element where the JavaScript has text. |
+| nineveh | one `<em>` that should be an `<a>` — another URL boundary. |
+
+Five of the eight are the same underlying thing: **linkify-it's URL
+boundaries**. That library is a state machine with a TLD list and a page of
+punctuation heuristics, and this implements the parts a real corpus exercises
+— a dot with something on each side, no hyphen in the last label, a trailing
+dot trimmed — which is enough for 49,211 links and not for all of them.
 
 ## What it does today
 

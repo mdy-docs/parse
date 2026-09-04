@@ -92,10 +92,8 @@ static size_t run_of(const mdy_line *l, char c) {
     return n;
 }
 
-static void trim(const char **s, size_t *len) {
-    while (*len && (**s == ' ' || **s == '\t')) { (*s)++; (*len)--; }
-    while (*len && ((*s)[*len - 1] == ' ' || (*s)[*len - 1] == '\t')) (*len)--;
-}
+/* JavaScript's notion of whitespace, not C's — see mdy_trim. */
+static void trim(const char **s, size_t *len) { mdy_trim(s, len); }
 
 /*
  * A heading's `id`, matching src/format.js's slugify: lowercase, runs of
@@ -157,8 +155,29 @@ static void separate(mdy_doc *doc, mdy_node *parent) {
  * a stream's documents on purpose — two articles on one page must not both own
  * `#introduction`.
  */
+/** Every text descendant, concatenated — a node's rendered content. */
+static size_t node_text(const mdy_node *n, char *out, size_t cap, size_t o) {
+    if (n->type == MDY_TEXT) {
+        size_t len = n->text ? strlen(n->text) : 0;
+        if (o + len > cap) len = cap > o ? cap - o : 0;
+        memcpy(out + o, n->text, len);
+        return o + len;
+    }
+    for (const mdy_node *c = n->first; c; c = c->next) o = node_text(c, out, cap, o);
+    return o;
+}
+
 static void set_heading_id(mdy_doc *doc, mdy_node *h, const char *text, size_t len) {
-    char *id = slugify(doc, text, len);
+    /*
+     * The SAME slug a `[[ label ]]` resolves to, not slugify — mdy-docs says
+     * why in heading.js: "a heading and a link written from the same text
+     * agree". The two differ wherever punctuation appears, because resolve
+     * DELETES what slugify hyphenates: `King's List` is `kings-list` under one
+     * and `king-s-list` under the other, and only the first is a link that
+     * works.
+     */
+    size_t id_len = 0;
+    const char *id = mdy_resolve_slug(doc, text, len, &id_len);
     if (!id || !*id) return;
 
     size_t taken = 0;
@@ -168,6 +187,7 @@ static void set_heading_id(mdy_doc *doc, mdy_node *h, const char *text, size_t l
     char unique[256];
     if (taken) snprintf(unique, sizeof unique, "%s-%zu", id, taken);
     else snprintf(unique, sizeof unique, "%s", id);
+    (void)id_len;
 
     if (doc->heading_count == doc->heading_cap) {
         size_t grown = doc->heading_cap ? doc->heading_cap * 2 : 32;
@@ -586,8 +606,18 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
             if (depth > max) depth = max;
             char tag[3] = { 'h', (char)('0' + (int)depth), '\0' };
             mdy_node *h = mdy_new_element(doc, tag, 2);
-            set_heading_id(doc, h, body, body_len);
             mdy_parse_inline(doc, h, body, body_len);
+            /*
+             * From the RENDERED text, not the source: `= Producing a //Book of
+             * the Dead//` is `producing-a-book-of-the-dead`, because the
+             * markers are gone by the time anyone reads the heading. Slugging
+             * the source leaves the slashes in an id nothing can link to.
+             */
+            {
+                char rendered[1024];
+                size_t rlen = node_text(h, rendered, sizeof rendered, 0);
+                set_heading_id(doc, h, rendered, rlen);
+            }
             mdy_set_position(h, lines, i, i);
             separate(doc, parent);
             mdy_append(parent, h);
@@ -782,9 +812,14 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
         char *joined = mdy_alloc(&doc->arena, total + 1);
         size_t o = 0;
         for (size_t k = i; k < j; k++) {
-            if (k > i) joined[o++] = ' ';
-            memcpy(joined + o, lines[k].text, lines[k].len);
-            o += lines[k].len;
+            /* Trailing whitespace is trimmed before the join, or a line ending
+             * in a space produces two of them in the paragraph. */
+            const char *lt = lines[k].text;
+            size_t ll = lines[k].len;
+            trim(&lt, &ll);
+            if (k > i && o) joined[o++] = ' ';
+            memcpy(joined + o, lt, ll);
+            o += ll;
         }
         joined[o] = '\0';
         /* A run of only whitespace produces no paragraph, and so must produce
@@ -809,8 +844,12 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
         if (setext && probe_len) {
             char tag[3] = { 'h', (char)('0' + setext), '\0' };
             mdy_node *h = mdy_new_element(doc, tag, 2);
-            set_heading_id(doc, h, probe, probe_len);
             mdy_parse_inline(doc, h, probe, probe_len);
+            {
+                char rendered[1024];
+                size_t rlen = node_text(h, rendered, sizeof rendered, 0);
+                set_heading_id(doc, h, rendered, rlen);
+            }
             mdy_set_position(h, lines, i, j);
             separate(doc, parent);
             mdy_append(parent, h);

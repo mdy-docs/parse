@@ -206,3 +206,46 @@ size_t mdy_from_utf16(const uint16_t *units, size_t count, char *out, size_t cap
     }
     return o;
 }
+
+/*
+ * Whitespace as JavaScript means it — `String.prototype.trim` removes all of
+ * this, and a trim that only knows about space and tab does not.
+ *
+ * Not academic: a label in the reference corpus ends `"Obelisk"\u00a0`, and an
+ * ASCII-only trim leaves the no-break space in the link's text. WhiteSpace and
+ * LineTerminator from the spec: tab, vertical tab, form feed, space, no-break
+ * space, zero-width no-break space, every Space_Separator, and the four line
+ * terminators.
+ */
+int mdy_is_js_space(uint32_t cp) {
+    switch (cp) {
+        case 0x09: case 0x0A: case 0x0B: case 0x0C: case 0x0D:
+        case 0x20: case 0xA0: case 0x1680: case 0x2028: case 0x2029:
+        case 0x202F: case 0x205F: case 0x3000: case 0xFEFF:
+            return 1;
+        default:
+            return cp >= 0x2000 && cp <= 0x200A;
+    }
+}
+
+/** Trim JavaScript whitespace from both ends of a UTF-8 range. */
+void mdy_trim(const char **s, size_t *len) {
+    while (*len) {
+        uint32_t cp;
+        size_t w = mdy_utf8_decode(*s, *len, &cp);
+        if (!mdy_is_js_space(cp)) break;
+        *s += w;
+        *len -= w;
+    }
+    while (*len) {
+        /* Step back over one whole character: one byte back into a multi-byte
+         * one is not a character. */
+        size_t back = *len;
+        while (back > 0 && ((unsigned char)(*s)[back - 1] & 0xC0) == 0x80) back--;
+        if (back > 0) back--;
+        uint32_t cp;
+        mdy_utf8_decode(*s + back, *len - back, &cp);
+        if (!mdy_is_js_space(cp)) break;
+        *len = back;
+    }
+}

@@ -135,6 +135,12 @@ int mdy_protocol_allowed(const char *attr, const char *value, size_t len);
  * which is what String.prototype.toLowerCase uses. Both read baru-re's
  * generated UCD tables rather than approximating them. */
 int mdy_is_letter_or_number_cp(uint32_t cp);
+
+/* Whitespace as JavaScript means it, and a trim that uses it — String.trim
+ * removes no-break spaces and the Unicode separators, and an ASCII-only trim
+ * leaves them in a link's text. */
+int mdy_is_js_space(uint32_t cp);
+void mdy_trim(const char **s, size_t *len);
 uint32_t mdy_lower_cp(uint32_t cp);
 
 /* Decode one UTF-8 character, returning its width in bytes; an ill-formed
@@ -147,6 +153,11 @@ size_t mdy_utf8_encode(uint32_t cp, char *out);
 size_t mdy_utf16_length(const char *s, size_t len);
 size_t mdy_to_utf16(const char *s, size_t len, uint16_t *out, size_t cap);
 size_t mdy_from_utf16(const uint16_t *units, size_t count, char *out, size_t cap);
+
+/* Where a bare `[[ label ]]` points — mdy-docs' defaultResolve. Headings use
+ * it too, so a heading and a link written from the same text agree; it is NOT
+ * `slugify`, which hyphenates what this deletes. */
+const char *mdy_resolve_slug(mdy_doc *doc, const char *s, size_t len, size_t *out_len);
 
 /* ---- emoji (src/emoji.c) -------------------------------------------------- */
 
