@@ -410,19 +410,28 @@ static size_t parse_element(mdy_doc *doc, mdy_node *parent,
         return i + 1;
     }
 
+    /*
+     * Space after the `<` means nothing, the same as space between the
+     * attributes — html.js says so in as many words, and a real layout is
+     * written that way: `< html lang="en"` with the tag indented for reading.
+     * Without this the tag came out empty, so every such element became a
+     * <div> and its name became an attribute.
+     */
     size_t n = 1;                       /* past the `<` */
+    while (n < l->len && (l->text[n] == ' ' || l->text[n] == '\t')) n++;
+    size_t tag_at = n;
     if (n < l->len && is_tag_start(l->text[n])) {
         n++;
         while (n < l->len && is_tag_char(l->text[n])) n++;
     }
 
     char tag[64];
-    size_t tag_len = n - 1;
+    size_t tag_len = n - tag_at;
     if (tag_len == 0) { memcpy(tag, "div", 3); tag_len = 3; }
     else {
         if (tag_len > sizeof tag - 1) tag_len = sizeof tag - 1;
         for (size_t k = 0; k < tag_len; k++) {
-            char c = l->text[1 + k];
+            char c = l->text[tag_at + k];
             tag[k] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
         }
     }

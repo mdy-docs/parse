@@ -162,6 +162,17 @@ int main(void) {
           ROOT(EL("p", "", EL("a", "\"href\":\"/url\"", TX("label")))), &o);
 
     printf("--- mdyast: the element syntax ---\n");
+    /* Space after the `<` means nothing, which a real layout relies on:
+     * `< html lang="en"` with the tag indented for reading. Unsanitised,
+     * because <html> is not on the allowlist — with sanitising on, both this
+     * and the JavaScript produce nothing at all. */
+    {
+        mdy_options raw = o;
+        raw.sanitize = 0;
+        check("space after < is nothing", "< html lang=\"en\"",
+              ROOT(EL("html", "\"lang\":\"en\"", "")), &raw);
+        check("…and <html> is not on the allowlist", "< html lang=\"en\"", ROOT(""), &o);
+    }
     check("a bare < is a div", "<\n  inside",
           ROOT(EL("div", "", TX("\\n") "," EL("p", "", TX("inside")) "," TX("\\n"))), &o);
     check("attributes become hast properties", "<img src=\"a.jpg\" height=\"10\"",
