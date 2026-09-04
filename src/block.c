@@ -206,21 +206,27 @@ static void set_heading_id(mdy_doc *doc, mdy_node *h, const char *text, size_t l
 
 /** How many characters of `l` are a list marker, and whether it is ordered.
  * `-`, `*`, `+` for bullets; `1.` or `1)` for ordered. 0 means not a list. */
+/*
+ * A marker must be followed by a space, a tab, or THE END OF THE LINE — that
+ * last one is not a nicety. `1931.` alone on a line is an ordered list whose
+ * item content is on the following lines, and reading it as prose instead put
+ * it inside the paragraph above and shifted every footnote number after it.
+ * `1931.x` is not a marker, because something that is not a space follows.
+ */
 static size_t list_marker(const mdy_line *l, int *ordered) {
-    if (l->len < 2) return 0;
+    if (l->len < 1) return 0;
     char c = l->text[0];
-    if ((c == '-' || c == '*' || c == '+') && (l->text[1] == ' ' || l->text[1] == '\t')) {
-        *ordered = 0;
-        return 2;
+    if (c == '-' || c == '*' || c == '+') {
+        if (l->len == 1) { *ordered = 0; return 1; }
+        if (l->text[1] == ' ' || l->text[1] == '\t') { *ordered = 0; return 2; }
+        return 0;
     }
     size_t digits = 0;
     while (digits < l->len && l->text[digits] >= '0' && l->text[digits] <= '9') digits++;
-    if (digits > 0 && digits + 1 < l->len &&
-        (l->text[digits] == '.' || l->text[digits] == ')') &&
-        (l->text[digits + 1] == ' ' || l->text[digits + 1] == '\t')) {
-        *ordered = 1;
-        return digits + 2;
-    }
+    if (digits == 0 || digits >= l->len) return 0;
+    if (l->text[digits] != '.' && l->text[digits] != ')') return 0;
+    if (digits + 1 == l->len) { *ordered = 1; return digits + 1; }   /* end of line */
+    if (l->text[digits + 1] == ' ' || l->text[digits + 1] == '\t') { *ordered = 1; return digits + 2; }
     return 0;
 }
 
@@ -538,7 +544,7 @@ static size_t parse_table(mdy_doc *doc, mdy_node *parent, const mdy_line *lines,
 /* Returns whether anything was added — an all-whitespace run produces no
  * paragraph, and must not produce a separator either. */
 static int add_paragraph(mdy_doc *doc, mdy_node *parent, const char *joined, size_t len) {
-    trim(&joined, &len);
+    mdy_trim_end(&joined, &len);
     if (!len) return 0;
     mdy_node *p = mdy_new_element(doc, "p", 1);
     mdy_parse_inline(doc, p, joined, len);
@@ -775,9 +781,30 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
                  * a nested list. `- one` then `  two` is one item reading
                  * "one two"; `- a` then `  - b` is an item holding a <ul>.
                  */
+                /*
+                 * A continuation line needs NO indentation — `- one` followed
+                 * by an unindented `two` is one item reading "one two". What
+                 * ends an item is another marker, or a line that starts a
+                 * block of its own; indentation only matters for deciding
+                 * whether a blank line is a gap inside the item or the end of
+                 * it.
+                 */
                 size_t item_end = i + 1;
-                while (item_end < count &&
-                       (lines[item_end].blank || lines[item_end].indent > l->indent)) item_end++;
+                while (item_end < count) {
+                    const mdy_line *k = &lines[item_end];
+                    if (k->blank) {
+                        size_t peek = item_end;
+                        while (peek < count && lines[peek].blank) peek++;
+                        if (peek < count && lines[peek].indent > l->indent) { item_end = peek; continue; }
+                        break;
+                    }
+                    if (k->indent > l->indent) { item_end++; continue; }
+                    int k_ordered = 0;
+                    if (list_marker(k, &k_ordered)) break;
+                    if (k->text[0] == '<' || k->text[0] == '=') break;
+                    if ((all_of(k, '-') || all_of(k, '*') || all_of(k, '_')) && k->len >= 3) break;
+                    item_end++;
+                }
                 while (item_end > i + 1 && lines[item_end - 1].blank) item_end--;
 
                 const char *body = lines[i].text + width;
@@ -826,7 +853,10 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
                 memcpy(joined, body, body_len);
                 o = body_len;
                 for (size_t k = i + 1; k < plain_end; k++) {
-                    if (o) joined[o++] = ' ';
+                    /* The separator goes in even when the marker line left
+                     * nothing behind it — `1931.` then `next` is an item
+                     * reading " next", with the space the join put there. */
+                    joined[o++] = ' ';
                     memcpy(joined + o, lines[k].text, lines[k].len);
                     o += lines[k].len;
                 }
@@ -836,6 +866,10 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
                      * between items produces. */
                     mdy_node *wrap = mdy_new_element(doc, "p", 1);
                     mdy_parse_inline(doc, wrap, joined, o);
+                    /* The paragraph a loose item wraps its content in spans
+                     * the same lines the item does — it IS the item's
+                     * content, not a block of its own. */
+                    mdy_set_position(wrap, lines, i, item_end > i ? item_end - 1 : i);
                     mdy_append(item, mdy_new_text(doc, "\n", 1));
                     mdy_append(item, wrap);
                     mdy_append(item, mdy_new_text(doc, "\n", 1));
@@ -885,11 +919,16 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
         char *joined = mdy_alloc(&doc->arena, total + 1);
         size_t o = 0;
         for (size_t k = i; k < j; k++) {
-            /* Trailing whitespace is trimmed before the join, or a line ending
-             * in a space produces two of them in the paragraph. */
+            /*
+             * TRAILING whitespace only. A line's leading spaces are its
+             * indentation and were removed when the lines were measured; a
+             * leading NO-BREAK space is not indentation and belongs to the
+             * text, which is what `\u00a0\u00a0Kingdom of …` in the corpus
+             * depends on.
+             */
             const char *lt = lines[k].text;
             size_t ll = lines[k].len;
-            trim(&lt, &ll);
+            mdy_trim_end(&lt, &ll);
             if (k > i && o) joined[o++] = ' ';
             memcpy(joined + o, lt, ll);
             o += ll;
@@ -912,7 +951,7 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
 
         const char *probe = joined;
         size_t probe_len = o;
-        trim(&probe, &probe_len);
+        mdy_trim_end(&probe, &probe_len);
 
         if (setext && probe_len) {
             char tag[3] = { 'h', (char)('0' + setext), '\0' };

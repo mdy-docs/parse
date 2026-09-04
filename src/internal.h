@@ -141,6 +141,7 @@ int mdy_is_letter_or_number_cp(uint32_t cp);
  * leaves them in a link's text. */
 int mdy_is_js_space(uint32_t cp);
 void mdy_trim(const char **s, size_t *len);
+void mdy_trim_end(const char **s, size_t *len);
 uint32_t mdy_lower_cp(uint32_t cp);
 
 /* Decode one UTF-8 character, returning its width in bytes; an ill-formed

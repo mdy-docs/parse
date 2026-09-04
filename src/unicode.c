@@ -228,6 +228,27 @@ int mdy_is_js_space(uint32_t cp) {
     }
 }
 
+/*
+ * Trim JavaScript whitespace from the END only.
+ *
+ * Leading whitespace is not the same question. A line's leading SPACES are its
+ * indentation, measured and removed before any rule sees the line — but a
+ * no-break space is not indentation, and mdy-docs keeps it: `\u00a0\u00a0Kingdom`
+ * starts a paragraph with two no-break spaces in its text. Trimming both ends
+ * with the same Unicode-aware rule deleted them.
+ */
+void mdy_trim_end(const char **s, size_t *len) {
+    while (*len) {
+        size_t back = *len;
+        while (back > 0 && ((unsigned char)(*s)[back - 1] & 0xC0) == 0x80) back--;
+        if (back > 0) back--;
+        uint32_t cp;
+        mdy_utf8_decode(*s + back, *len - back, &cp);
+        if (!mdy_is_js_space(cp)) break;
+        *len = back;
+    }
+}
+
 /** Trim JavaScript whitespace from both ends of a UTF-8 range. */
 void mdy_trim(const char **s, size_t *len) {
     while (*len) {
