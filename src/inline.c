@@ -67,12 +67,19 @@ static int host_length(const char *p, size_t left) {
     size_t n = 0, dots = 0, label = 0;
     while (n < left) {
         char c = p[n];
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-            c == '-' || (unsigned char)c >= 0x80) {
-            /* Non-ASCII is a host character: `//rꜥ-qdy.t//` is a link in this
-             * corpus, and rejecting the bytes would make it emphasis. */
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-') {
             label++;
             n++;
+            continue;
+        }
+        if ((unsigned char)c >= 0x80) {
+            /* A host may hold any letter — `//rꜥ-qdy.t//` is a link in this
+             * corpus — so the whole character is consumed, not its lead byte. */
+            uint32_t cp;
+            size_t width = mdy_utf8_decode(p + n, left - n, &cp);
+            if (!mdy_is_letter_or_number_cp(cp)) break;
+            label++;
+            n += width;
             continue;
         }
         if (c == '.' && label > 0) { dots++; label = 0; n++; continue; }
@@ -395,40 +402,34 @@ void mdy_parse_inline(mdy_doc *doc, mdy_node *parent, const char *text, size_t l
  * label in the corpus.
  */
 static const char *slug_of(mdy_doc *doc, const char *s, size_t len, size_t *out_len) {
-    char *out = mdy_alloc(&doc->arena, len + 2);
+    /* Lowercasing can grow a character (ẞ is one byte wider lowered), so the
+     * buffer allows for it rather than assuming the output is no longer than
+     * the input. */
+    char *out = mdy_alloc(&doc->arena, len * 2 + 2);
     if (!out) { *out_len = 0; return NULL; }
+
     size_t o = 0;
-    for (size_t i = 0; i < len; i++) {
-        unsigned char c = (unsigned char)s[i];
+    for (size_t i = 0; i < len;) {
+        uint32_t cp;
+        size_t width = mdy_utf8_decode(s + i, len - i, &cp);
+        i += width;
 
-        /* Whitespace, including the no-break space a copied corpus is full of
-         * — `\s` matches it, and missing that leaves a space in a URL. */
-        int space = c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
-                    (c == 0xC2 && i + 1 < len && (unsigned char)s[i + 1] == 0xA0);
-        if (space) {
+        /* `\s+` becomes one hyphen. That includes the no-break space a copied
+         * corpus is full of, and the Unicode spaces around it. */
+        if (cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r' || cp == 0x00A0 ||
+            (cp >= 0x2000 && cp <= 0x200A) || cp == 0x2028 || cp == 0x2029 ||
+            cp == 0x202F || cp == 0x205F || cp == 0x3000) {
             if (o && out[o - 1] != '-') out[o++] = '-';
-            if (c == 0xC2) i++;
             continue;
         }
 
-        if (c == '-' || c == '/' || c == '.' || c == '_' || c == '#' ||
-            mdy_is_letter_or_number(s + i, len - i)) {
-            char lowered[4];
-            size_t n = mdy_lower_utf8(s + i, len - i, lowered);
-            for (size_t k = 0; k < n; k++) out[o++] = lowered[k];
-            i += n - 1;
+        if (cp == '-' || cp == '/' || cp == '.' || cp == '_' || cp == '#' ||
+            mdy_is_letter_or_number_cp(cp)) {
+            o += mdy_utf8_encode(mdy_lower_cp(cp), out + o);
             continue;
         }
-        /*
-         * Deleted — and the WHOLE character, not one byte of it. Advancing by
-         * one left the trailing bytes of an en dash behind, which came out as
-         * `first-jewish\xe2\x80\x93roman-war` minus its lead byte: mojibake in
-         * a URL, and invisible in any test that only counts nodes.
-         */
-        unsigned char lead = c;
-        size_t width = lead < 0x80 ? 1 : (lead & 0xE0) == 0xC0 ? 2 : (lead & 0xF0) == 0xE0 ? 3 : 4;
-        if (i + width > len) width = 1;
-        i += width - 1;
+        /* Everything else is deleted — the WHOLE character, which decoding
+         * rather than walking bytes is what guarantees. */
     }
     out[o] = '\0';
     *out_len = o;

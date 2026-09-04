@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "mdyast.h"
+#include "internal.h"
 
 static int failures = 0;
 
@@ -209,6 +210,86 @@ int main(void) {
     check("a repeated heading gets a suffix", "= Same\n\n= Same",
           ROOT(EL("h1", "\"id\":\"same\"", TX("Same")) ","
                EL("h1", "\"id\":\"same-1\"", TX("Same"))), &o);
+
+    printf("--- mdyast: unicode ---\n");
+    /* An astral character is ONE code point and TWO UTF-16 units. The corpus
+     * has 1,351 of them, all cuneiform, so this is the case to get right. */
+    {
+        const char *sign = "\xf0\x92\x80\x80";          /* U+12000 CUNEIFORM SIGN A */
+        uint32_t cp = 0;
+        size_t width = mdy_utf8_decode(sign, 4, &cp);
+        int ok = width == 4 && cp == 0x12000;
+        printf("  %s  a cuneiform sign decodes to one code point\n", ok ? "ok  " : "FAIL");
+        if (!ok) failures++;
+
+        uint16_t units[8];
+        size_t n = mdy_to_utf16(sign, 4, units, 8);
+        ok = n == 2 && units[0] == 0xD808 && units[1] == 0xDC00;
+        printf("  %s  …and to a surrogate PAIR in UTF-16\n", ok ? "ok  " : "FAIL");
+        if (!ok) failures++;
+
+        ok = mdy_utf16_length(sign, 4) == 2;
+        printf("  %s  …so its JavaScript length is 2, not 1\n", ok ? "ok  " : "FAIL");
+        if (!ok) failures++;
+
+        char back[8];
+        size_t b = mdy_from_utf16(units, n, back, 8);
+        ok = b == 4 && memcmp(back, sign, 4) == 0;
+        printf("  %s  …and round trips back to the same bytes\n", ok ? "ok  " : "FAIL");
+        if (!ok) failures++;
+
+        /* An unpaired surrogate cannot be encoded; U+FFFD rather than a
+         * refusal, since the character is already lost. */
+        uint16_t lone[1] = { 0xD808 };
+        b = mdy_from_utf16(lone, 1, back, 8);
+        ok = b == 3 && (unsigned char)back[0] == 0xEF;
+        printf("  %s  an unpaired surrogate becomes U+FFFD\n", ok ? "ok  " : "FAIL");
+        if (!ok) failures++;
+
+        /* Ill-formed input must not shift everything after it. */
+        uint32_t bad = 0;
+        ok = mdy_utf8_decode("\xC3", 1, &bad) == 1 && bad == 0xFFFD;
+        printf("  %s  a truncated sequence is one byte and U+FFFD\n", ok ? "ok  " : "FAIL");
+        if (!ok) failures++;
+
+        /* An overlong form is ill-formed: C0 80 is not U+0000. */
+        ok = mdy_utf8_decode("\xC0\x80", 2, &bad) == 1 && bad == 0xFFFD;
+        printf("  %s  an overlong form is rejected\n", ok ? "ok  " : "FAIL");
+        if (!ok) failures++;
+
+        ok = mdy_lower_cp(0x0143) == 0x0144 && mdy_lower_cp(0x1E2A) == 0x1E2B &&
+             mdy_lower_cp(0x00C9) == 0x00E9;
+        printf("  %s  case mapping is the real table, not a guess (Ń Ḫ É)\n", ok ? "ok  " : "FAIL");
+        if (!ok) failures++;
+
+        ok = mdy_is_letter_or_number_cp(0x12000) && !mdy_is_letter_or_number_cp(0x2013) &&
+             mdy_is_letter_or_number_cp(0x0661);
+        printf("  %s  \\p{L} and \\p{N} are the real tables (cuneiform yes, en dash no)\n", ok ? "ok  " : "FAIL");
+        if (!ok) failures++;
+
+        /* Invalid bytes in the middle of a document must not derail the rest
+         * of it: one byte consumed, one replacement character, everything
+         * after it still at the right offset. */
+        ok = mdy_utf8_decode("\xED\xA0\x80", 3, &bad) == 1 && bad == 0xFFFD;
+        printf("  %s  a surrogate encoded as UTF-8 is rejected\n", ok ? "ok  " : "FAIL");
+        if (!ok) failures++;
+
+        ok = mdy_utf8_decode("\xF5\x80\x80\x80", 4, &bad) == 1 && bad == 0xFFFD;
+        printf("  %s  a code point above U+10FFFF is rejected\n", ok ? "ok  " : "FAIL");
+        if (!ok) failures++;
+    }
+
+    /* Astral characters must survive the parse and the JSON, unmangled. */
+    check("cuneiform survives a paragraph", "sign \xf0\x92\x80\x80 here",
+          ROOT(EL("p", "", TX("sign \xf0\x92\x80\x80 here"))), &o);
+    /* An en dash is not a letter, so defaultResolve deletes it — and deletes
+     * all three of its bytes. */
+    check("an en dash is deleted from a slug, whole", "[[ First Jewish\xe2\x80\x93Roman War ]]",
+          ROOT(EL("p", "", EL("a", "\"href\":\"first-jewishroman-war\"",
+                              TX("First Jewish\xe2\x80\x93Roman War")))), &o);
+    check("a slug lowercases beyond ASCII", "[[ Kazimierz Micha\xc5\x81owski ]]",
+          ROOT(EL("p", "", EL("a", "\"href\":\"kazimierz-micha\xc5\x82owski\"",
+                              TX("Kazimierz Micha\xc5\x81owski")))), &o);
 
     printf("\n%s\n", failures ? "FAILURES" : "all checks passed");
     return failures ? 1 : 0;

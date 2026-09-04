@@ -100,14 +100,25 @@ static char *slugify(mdy_doc *doc, const char *s, size_t len) {
     if (!out) return NULL;
     size_t o = 0;
     int pending_hyphen = 0;
-    for (size_t i = 0; i < len; i++) {
-        unsigned char c = (unsigned char)s[i];
-        int keep = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
-        if (c >= 'A' && c <= 'Z') { c = (unsigned char)(c - 'A' + 'a'); keep = 1; }
-        if (keep) {
+    for (size_t i = 0; i < len;) {
+        /*
+         * slugify is `[^a-z0-9]+` -> `-` AFTER a lowercase, so it is genuinely
+         * ASCII-only — `Ašared` slugs to `a-ared` in the JavaScript too, and
+         * matching that matters more than improving it, because a heading's id
+         * is a URL somebody may already have linked to.
+         *
+         * Whole characters still, so a multi-byte one collapses to ONE hyphen
+         * rather than one per byte.
+         */
+        uint32_t cp;
+        size_t width = mdy_utf8_decode(s + i, len - i, &cp);
+        i += width;
+
+        uint32_t lowered = cp < 0x80 ? mdy_lower_cp(cp) : cp;
+        if ((lowered >= 'a' && lowered <= 'z') || (lowered >= '0' && lowered <= '9')) {
             if (pending_hyphen && o) out[o++] = '-';
             pending_hyphen = 0;
-            out[o++] = (char)c;
+            out[o++] = (char)lowered;
         } else {
             pending_hyphen = 1;
         }

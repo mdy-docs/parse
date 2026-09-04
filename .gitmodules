@@ -1,0 +1,3 @@
+[submodule "third_party/baru-re"]
+	path = third_party/baru-re
+	url = https://github.com/mdy-docs/baru-re.git

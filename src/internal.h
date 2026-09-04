@@ -128,13 +128,25 @@ int mdy_tag_allowed(const char *tag);
 int mdy_attr_allowed(const char *tag, const char *name, size_t len);
 int mdy_protocol_allowed(const char *attr, const char *value, size_t len);
 
-/* Lowercase one UTF-8 character into `out` (which must hold 4 bytes),
- * returning how many bytes it consumed from `in`. */
-size_t mdy_lower_utf8(const char *in, size_t left, char *out);
+/* ---- Unicode (src/unicode.c) --------------------------------------------- */
 
-/* Whether one UTF-8 character is a letter or a number — `\p{L}` or `\p{N}`,
- * which is the question defaultResolve asks of every character. */
-int mdy_is_letter_or_number(const char *p, size_t left);
+/* One character in, one out. `\p{L}` or `\p{N}` — the question
+ * defaultResolve asks of every character — and the simple lowercase mapping,
+ * which is what String.prototype.toLowerCase uses. Both read baru-re's
+ * generated UCD tables rather than approximating them. */
+int mdy_is_letter_or_number_cp(uint32_t cp);
+uint32_t mdy_lower_cp(uint32_t cp);
+
+/* Decode one UTF-8 character, returning its width in bytes; an ill-formed
+ * sequence is one byte and U+FFFD. Encode one, into 4 bytes of `out`. */
+size_t mdy_utf8_decode(const char *p, size_t left, uint32_t *out);
+size_t mdy_utf8_encode(uint32_t cp, char *out);
+
+/* The UTF-16 boundary — what a JavaScript engine's strings are, and what
+ * unist positions count in. Astral characters are two units, not one. */
+size_t mdy_utf16_length(const char *s, size_t len);
+size_t mdy_to_utf16(const char *s, size_t len, uint16_t *out, size_t cap);
+size_t mdy_from_utf16(const uint16_t *units, size_t count, char *out, size_t cap);
 
 /* ---- the stages ---------------------------------------------------------- */
 

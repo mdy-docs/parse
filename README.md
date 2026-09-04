@@ -76,6 +76,7 @@ and the harness is as much the point of this repo as the parser is.
 | **Footnotes** | references, definitions, numbering by first reference, the collected `<section>` with per-reference backrefs |
 | **Sanitisation** | the element allowlist, per-element attribute allowlists, and the `href`/`src` protocol check |
 | **Attributes** | hast property naming (`class` → `className`, `colspan` → `colSpan`, `data-x` → `dataX`), with `className` as a list |
+| **Unicode** | UTF-8 throughout, decoded strictly; `\p{L}`, `\p{N}` and case mapping from baru-re's generated UCD tables rather than approximated; a UTF-16 conversion for the JavaScript boundary, astral characters and all |
 | **Tree** | the three node types the corpus produces, arena-allocated, with interned tag and property names |
 
 **Still missing:**
@@ -144,5 +145,9 @@ already in this family export unprefixed names like `compile_into` and
 library's calls to the other's differently versioned implementation. A prefix
 is cheap; finding that is not.
 
-**No dependencies**, not even libc beyond `malloc`/`free`/`str*`/`snprintf`.
-No platform `#ifdef`s. It should build anywhere a C11 compiler does.
+**One dependency**, and only for its tables: `third_party/baru-re` supplies the
+generated UCD data for `\p{L}`, `\p{N}` and simple lowercase. Referenced
+directly rather than through its property lookup, so the linker keeps 8 KB of
+it rather than 619 KB. Nothing else, not even libc beyond
+`malloc`/`free`/`str*`/`snprintf`, and no platform `#ifdef`s — it should build
+anywhere a C11 compiler does.

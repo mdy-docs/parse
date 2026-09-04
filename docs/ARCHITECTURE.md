@@ -113,6 +113,51 @@ skipped for a first cut, and that is wrong: `<td scope="col">` produces no
 Skipping the check does not produce "slightly more" tree — it produces a
 different one.
 
+## Text is UTF-8, and the questions are about characters
+
+`src/unicode.c`. UTF-8 everywhere — the source, the tree's text, the JSON —
+with no conversion unless something asks for one.
+
+That is safe for the same reason it is fast: **UTF-8 is self-synchronising**.
+No byte of a multi-byte character can be mistaken for ASCII, so every rule that
+scans for `|`, `-`, `[[` or a marker can walk bytes and be right, and most of
+this parser does.
+
+What cannot walk bytes is anything asking a question *about* a character — is
+it a letter, what is its lowercase, should it be deleted. Each of the three
+places that did was a bug:
+
+- "Non-ASCII is a letter" kept en dashes in URLs, because `\p{L}` says they are
+  not.
+- A hand-written lowercase table covering Latin-1 and Latin Extended-A left `Ń`
+  and `Ḫ` uppercase.
+- Deleting a character by advancing one byte left the other two behind —
+  mojibake in a URL, and invisible to anything counting nodes.
+
+So the classification and case tables are **not ours**. They are baru-re's
+generated UCD data, reached directly (`ucd_gc_Letter_ranges`,
+`ucd_gc_Number_ranges`, `UCD_SIMPLE_LOWERCASE`) rather than through
+`lookup_unicode_property`, which would pull in every property Unicode has: 8 KB
+against 619 KB.
+
+Decoding is strict, because a lenient decoder is how one bad byte shifts every
+offset after it. Overlong forms, surrogates encoded as three bytes, and
+anything above U+10FFFF are all ill-formed, and each is one byte consumed and
+one U+FFFD — never a resynchronisation that eats what follows.
+
+### The UTF-16 boundary
+
+A boundary, not a representation. Every JavaScript engine — QuickJS, lamassu,
+V8 — holds strings as UTF-16, so a tree built here crosses that conversion on
+its way into one, and unist positions are counted in those units rather than in
+characters or bytes.
+
+The corpus has 1,351 astral characters in it, all Sumerian cuneiform, and each
+is **one code point and two UTF-16 units**. Anything that conflates those
+counts is wrong on exactly those characters, which is why they are what the
+tests use — along with an unpaired surrogate, which cannot be encoded at all
+and becomes U+FFFD rather than failing the document.
+
 ## What is not here, on purpose
 
 **Syntax highlighting.** It is a decoration of a tree that is already correct —
