@@ -128,6 +128,37 @@ static void separate(mdy_doc *doc, mdy_node *parent) {
     if (parent->type == MDY_ELEMENT) mdy_append(parent, mdy_new_text(doc, "\n", 1));
 }
 
+/*
+ * A heading's `id`, unique across the document: a second `= Same` is `same-1`,
+ * a third `same-2`. mdy-docs calls this the heading state and shares it across
+ * a stream's documents on purpose — two articles on one page must not both own
+ * `#introduction`.
+ */
+static void set_heading_id(mdy_doc *doc, mdy_node *h, const char *text, size_t len) {
+    char *id = slugify(doc, text, len);
+    if (!id || !*id) return;
+
+    size_t taken = 0;
+    for (size_t k = 0; k < doc->heading_count; k++)
+        if (strcmp(doc->heading_ids[k], id) == 0) taken++;
+
+    char unique[256];
+    if (taken) snprintf(unique, sizeof unique, "%s-%zu", id, taken);
+    else snprintf(unique, sizeof unique, "%s", id);
+
+    if (doc->heading_count == doc->heading_cap) {
+        size_t grown = doc->heading_cap ? doc->heading_cap * 2 : 32;
+        const char **next = mdy_alloc(&doc->arena, sizeof(char *) * grown);
+        if (next) {
+            for (size_t k = 0; k < doc->heading_count; k++) next[k] = doc->heading_ids[k];
+            doc->heading_ids = next;
+            doc->heading_cap = grown;
+        }
+    }
+    if (doc->heading_count < doc->heading_cap) doc->heading_ids[doc->heading_count++] = id;
+    mdy_set_string(doc, h, "id", unique, strlen(unique));
+}
+
 /* ---- list markers -------------------------------------------------------- */
 
 /** How many characters of `l` are a list marker, and whether it is ordered.
@@ -309,7 +340,13 @@ static size_t parse_element(mdy_doc *doc, mdy_node *parent,
         trim(&content, &content_len);
         mdy_parse_inline(doc, el, content, content_len);
     }
-    if (end > i + 1) mdy_parse_block(doc, el, lines + i + 1, end - (i + 1));
+    if (end > i + 1) {
+        /* The children's own column, so one of them being deeper than the
+         * others is what makes a div rather than all of them. */
+        size_t inner = lines[i + 1].indent;
+        for (size_t k = i + 1; k < end; k++) if (!lines[k].blank && lines[k].indent < inner) inner = lines[k].indent;
+        mdy_parse_block(doc, el, lines + i + 1, end - (i + 1), inner);
+    }
     separate(doc, parent);
     mdy_append(parent, el);
     return end;
@@ -458,14 +495,9 @@ static int add_paragraph(mdy_doc *doc, mdy_node *parent, const char *joined, siz
     return 1;
 }
 
-void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size_t count) {
+void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size_t count, size_t base) {
     size_t i = 0;
     int produced = 0;
-
-    /* The level this run of lines sits at. Anything more indented than the
-     * first line belongs to a block of its own — see the div rule below. */
-    size_t base = 0;
-    for (size_t k = 0; k < count; k++) if (!lines[k].blank) { base = lines[k].indent; break; }
 
     while (i < count) {
         const mdy_line *l = &lines[i];
@@ -473,17 +505,30 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
         if (l->blank) { i++; continue; }
 
         /*
-         * NOT IMPLEMENTED: "lines indented under anything else get a <div> of
-         * their own". The rule is real — `top` then an indented line does
-         * produce `p("top") div(…)` — but a first attempt at it created 755
-         * divs where the JavaScript makes 40, so the condition is narrower
-         * than "more indented than this level". An element opener already
-         * takes its own indented lines as children (parse_element), which is
-         * where almost all indentation in a real document goes; what is left
-         * is 38 divs across the whole corpus, and guessing at the rule is
-         * worse than not having it. (void)base until it is worked out.
+         * Indentation is structural: a line further in than this run's own
+         * column is a block of its own, in a <div>. It nests — four columns
+         * under two is a div inside a div — and it applies at the very start
+         * of a document too, so a file whose first line is indented opens with
+         * one.
+         *
+         * An element opener takes its own indented lines as children instead
+         * (parse_element), and a list item absorbs its continuation lines, so
+         * by the time this fires the indentation belongs to nothing else.
          */
-        (void)base;
+        if (l->indent > base) {
+            size_t j = i;
+            while (j < count && (lines[j].blank || lines[j].indent > base)) j++;
+            while (j > i && lines[j - 1].blank) j--;
+
+            size_t inner = lines[i].indent;
+            mdy_node *div = mdy_new_element(doc, "div", 3);
+            mdy_parse_block(doc, div, lines + i, j - i, inner);
+            separate(doc, parent);
+            mdy_append(parent, div);
+            produced = 1;
+            i = j;
+            continue;
+        }
 
         /* --- thematic break: three or more of - * _ alone --- */
         if ((all_of(l, '-') || all_of(l, '*') || all_of(l, '_')) && l->len >= 3) {
@@ -507,36 +552,7 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
             if (depth > max) depth = max;
             char tag[3] = { 'h', (char)('0' + (int)depth), '\0' };
             mdy_node *h = mdy_new_element(doc, tag, 2);
-            char *id = slugify(doc, body, body_len);
-            if (id && *id) {
-                /*
-                 * Ids are unique across the document: a second `= Same` is
-                 * `same-1`, a third `same-2`. mdy-docs calls this the heading
-                 * state and shares it across a stream's documents, so a page
-                 * built from several never has two headings a link cannot
-                 * tell apart.
-                 */
-                char unique[256];
-                size_t taken = 0;
-                for (size_t k = 0; k < doc->heading_count; k++)
-                    if (strcmp(doc->heading_ids[k], id) == 0) taken++;
-                if (taken) {
-                    snprintf(unique, sizeof unique, "%s-%zu", id, taken);
-                } else {
-                    snprintf(unique, sizeof unique, "%s", id);
-                }
-                if (doc->heading_count == doc->heading_cap) {
-                    size_t grown = doc->heading_cap ? doc->heading_cap * 2 : 32;
-                    const char **next = mdy_alloc(&doc->arena, sizeof(char *) * grown);
-                    if (next) {
-                        for (size_t k = 0; k < doc->heading_count; k++) next[k] = doc->heading_ids[k];
-                        doc->heading_ids = next;
-                        doc->heading_cap = grown;
-                    }
-                }
-                if (doc->heading_count < doc->heading_cap) doc->heading_ids[doc->heading_count++] = id;
-                mdy_set_string(doc, h, "id", unique, strlen(unique));
-            }
+            set_heading_id(doc, h, body, body_len);
             mdy_parse_inline(doc, h, body, body_len);
             separate(doc, parent);
             mdy_append(parent, h);
@@ -611,26 +627,93 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
         size_t marker = list_marker(l, &ordered);
         if (marker) {
             mdy_node *list = mdy_new_element(doc, ordered ? "ol" : "ul", 2);
-            /* The JavaScript puts a newline text node before each item and one
-             * after the last, so the HTML it stringifies is line-per-item.
-             * Matching that exactly is the difference between an identical
-             * tree and a nearly identical one. */
             mdy_append(list, mdy_new_text(doc, "\n", 1));
+            int any_task = 0;
+
             while (i < count) {
                 int this_ordered = 0;
                 size_t width = lines[i].blank ? 0 : list_marker(&lines[i], &this_ordered);
-                if (!width || this_ordered != ordered) break;
+                if (!width || this_ordered != ordered || lines[i].indent != l->indent) break;
+
+                /*
+                 * An item owns every following line indented past the marker:
+                 * a plain one continues its text, a deeper list marker becomes
+                 * a nested list. `- one` then `  two` is one item reading
+                 * "one two"; `- a` then `  - b` is an item holding a <ul>.
+                 */
+                size_t item_end = i + 1;
+                while (item_end < count &&
+                       (lines[item_end].blank || lines[item_end].indent > l->indent)) item_end++;
+                while (item_end > i + 1 && lines[item_end - 1].blank) item_end--;
 
                 const char *body = lines[i].text + width;
                 size_t body_len = lines[i].len - width;
                 trim(&body, &body_len);
 
                 mdy_node *item = mdy_new_element(doc, "li", 2);
-                mdy_parse_inline(doc, item, body, body_len);
+
+                /* `[ ]` or `[x]` after the marker makes it a task. */
+                int task = -1;
+                if (body_len >= 3 && body[0] == '[' && body[2] == ']' &&
+                    (body[1] == ' ' || body[1] == 'x' || body[1] == 'X')) {
+                    task = body[1] == ' ' ? 0 : 1;
+                    body += 3;
+                    body_len -= 3;
+                    while (body_len && *body == ' ') { body++; body_len--; }
+                    any_task = 1;
+                    mdy_add_class(doc, item, "task-list-item");
+
+                    mdy_node *box = mdy_new_element(doc, "input", 5);
+                    mdy_set_string(doc, box, "type", "checkbox", 8);
+                    mdy_set_bool(doc, box, "checked", task);
+                    mdy_set_bool(doc, box, "disabled", 1);
+                    mdy_append(item, box);
+                    mdy_append(item, mdy_new_text(doc, " ", 1));
+                }
+
+                /*
+                 * Continuation lines that are themselves plain join the item's
+                 * text; from the first line that opens a block, the rest is
+                 * parsed as blocks. That split is what makes `- one` / `  two`
+                 * one sentence and `- a` / `  - b` a nested list.
+                 */
+                size_t plain_end = i + 1;
+                while (plain_end < item_end && !lines[plain_end].blank) {
+                    int sub = 0;
+                    if (list_marker(&lines[plain_end], &sub) || lines[plain_end].text[0] == '<' ||
+                        lines[plain_end].text[0] == '=') break;
+                    plain_end++;
+                }
+
+                size_t total = body_len;
+                for (size_t k = i + 1; k < plain_end; k++) total += lines[k].len + 1;
+                char *joined = mdy_alloc(doc ? &doc->arena : NULL, total + 1);
+                size_t o = 0;
+                memcpy(joined, body, body_len);
+                o = body_len;
+                for (size_t k = i + 1; k < plain_end; k++) {
+                    if (o) joined[o++] = ' ';
+                    memcpy(joined + o, lines[k].text, lines[k].len);
+                    o += lines[k].len;
+                }
+                joined[o] = '\0';
+                mdy_parse_inline(doc, item, joined, o);
+
+                if (item_end > plain_end) {
+                    size_t inner = lines[plain_end].indent;
+                    for (size_t k = plain_end; k < item_end; k++)
+                        if (!lines[k].blank && lines[k].indent < inner) inner = lines[k].indent;
+                    mdy_parse_block(doc, item, lines + plain_end, item_end - plain_end, inner);
+                }
+
                 mdy_append(list, item);
                 mdy_append(list, mdy_new_text(doc, "\n", 1));
-                i++;
+                i = item_end;
             }
+
+            /* The list is marked once, after its items, because one task item
+             * makes the whole list a task list. */
+            if (any_task) mdy_add_class(doc, list, "contains-task-list");
             separate(doc, parent);
             mdy_append(parent, list);
             produced = 1;
@@ -642,8 +725,13 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
         size_t total = 0;
         while (j < count && !lines[j].blank) {
             int ordered_here = 0;
-            /* A line that starts another block ends this paragraph. */
-            if (j > i && (lines[j].text[0] == '=' || list_marker(&lines[j], &ordered_here) ||
+            /* A line that starts another block ends this paragraph — and a
+             * line further in than this run is another block, which is what
+             * makes `top` / `  in` a paragraph and a div rather than one
+             * paragraph reading "top in". */
+            if (j > i && lines[j].indent > base) break;
+            if (j > i && (lines[j].text[0] == '=' || lines[j].text[0] == '<' ||
+                          list_marker(&lines[j], &ordered_here) ||
                           ((all_of(&lines[j], '-') || all_of(&lines[j], '*') || all_of(&lines[j], '_')) && lines[j].len >= 3))) break;
             total += lines[j].len + 1;
             j++;
@@ -659,9 +747,34 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
         /* A run of only whitespace produces no paragraph, and so must produce
          * no separator either — which is why the emptiness is decided here
          * rather than inside add_paragraph. */
+        /*
+         * Setext: a line of `=` under a paragraph makes it an <h1>, and FOUR
+         * or more `-` make it an <h2>. Three hyphens do not — that is a
+         * thematic break, and the paragraph above it stands on its own.
+         */
+        const mdy_line *under = j < count ? &lines[j] : NULL;
+        int setext = 0;
+        if (under && !under->blank && under->indent == base) {
+            if (all_of(under, '=')) setext = 1;
+            else if (all_of(under, '-') && under->len >= 4) setext = 2;
+        }
+
         const char *probe = joined;
         size_t probe_len = o;
         trim(&probe, &probe_len);
+
+        if (setext && probe_len) {
+            char tag[3] = { 'h', (char)('0' + setext), '\0' };
+            mdy_node *h = mdy_new_element(doc, tag, 2);
+            set_heading_id(doc, h, probe, probe_len);
+            mdy_parse_inline(doc, h, probe, probe_len);
+            separate(doc, parent);
+            mdy_append(parent, h);
+            produced = 1;
+            i = j + 1;
+            continue;
+        }
+
         if (probe_len) {
             separate(doc, parent);
             add_paragraph(doc, parent, joined, o);
@@ -762,7 +875,7 @@ mdy_doc *mdy_parse(const char *text, size_t len, const mdy_options *options) {
 
     if (!doc->options.documents) {
         collect_definitions(doc, lines + start, count - start);
-        mdy_parse_block(doc, doc->root, lines + start, count - start);
+        mdy_parse_block(doc, doc->root, lines + start, count - start, 0);
         mdy_footnote_section(doc, doc->root);
         return doc;
     }
@@ -786,7 +899,7 @@ mdy_doc *mdy_parse(const char *text, size_t len, const mdy_options *options) {
         doc->note_count = 0;
         doc->next_number = 0;
         collect_definitions(doc, lines + section_start, i - section_start);
-        mdy_parse_block(doc, article, lines + section_start, i - section_start);
+        mdy_parse_block(doc, article, lines + section_start, i - section_start, 0);
         mdy_footnote_section(doc, article);
         mdy_append(doc->root, article);
         from = i + 1;

@@ -49,17 +49,17 @@ two orders of magnitude on this stage.
 `make compare` builds both and diffs them:
 
 ```
-  26/87 documents byte-identical
-  284175 nodes against the JavaScript's 284872 (100%)
-  32/87 documents with identical text
+  27/87 documents byte-identical
+  284487 nodes against the JavaScript's 284872 (99.9%)
+  33/87 documents with identical text
   99.98% of hrefs are ones the JavaScript also produces
 ```
 
 Whole-document equality is a hard bar for a 70 KB Wikipedia article — one rule
-missing anywhere makes the document differ — so the other three numbers are
-what movement looks like while the work is in progress. The largest remaining
-differences by tag are `a` −134, `div` −38, `p` −35 and `em` −21, out of
-49,211, 40, 14,217 and 5,842 respectively.
+missing anywhere makes the whole document differ — so the other three numbers
+are what movement looks like while the work is in progress. What is left is
+small and the harness names it: `a` −135, `p` +26, `em` −19 and `sup` +5, out
+of 49,211, 14,217, 5,842 and 15,846.
 
 ## What it does today
 
@@ -69,7 +69,9 @@ and the harness is as much the point of this repo as the parser is.
 
 | | |
 | --- | --- |
-| **Block** | documents (`---` → `<article>`), front matter, headings with slugged and de-duplicated ids, thematic breaks, fenced code, bullet and ordered lists, paragraphs with line joining, the `<element` syntax with indentation nesting, pipe tables with alignment |
+| **Block** | documents (`---` → `<article>`), front matter, headings with slugged and de-duplicated ids, Setext underlining, thematic breaks, fenced code, paragraphs with line joining, the `<element` syntax, pipe tables with alignment |
+| **Indentation** | structural, as MDY means it: a line further in than its run is a block of its own in a `<div>`, nesting as it goes; an element opener takes its indented lines as children; a list item absorbs its continuation |
+| **Lists** | bullet and ordered, nested lists, continuation lines, and `[ ]`/`[x]` task items with their checkbox and list classes |
 | **Inline** | the nine toggling markers, backslash escapes, raw spans, autolink (schemes and protocol-relative `//host`), wiki links, footnote references, `#tag` and `@user`, em dash, ellipsis, the six arrows |
 | **Footnotes** | references, definitions, numbering by first reference, the collected `<section>` with per-reference backrefs |
 | **Sanitisation** | the element allowlist, per-element attribute allowlists, and the `href`/`src` protocol check |
@@ -78,15 +80,15 @@ and the harness is as much the point of this repo as the parser is.
 
 **Still missing:**
 
-- **Syntax highlighting** in fenced code. mdy-docs uses lowlight, so a C
-  implementation needs its own; the corpus has no fenced code at all, which is
-  why it has not been the priority.
+- **Syntax highlighting** in fenced code — and deliberately, not for now.
+  mdy-docs uses lowlight, and highlighting is a *decoration* of a tree that is
+  already correct: it replaces a `<code>` element's single text node with a run
+  of `<span class="hljs-…">`. That is exactly the shape of thing to do
+  afterwards, in the lamassu VM, on the tree this produces. Reimplementing
+  lowlight in C would be a large piece of work to move a stage that does not
+  need to move.
 - **Emoji.** `:rocket:` and `:)` both become characters, and both need tables —
   the shortcode one is large. The corpus has 20 of them.
-- **The indented-`div` rule.** "Lines indented under anything else get a `<div>`
-  of their own" is real, but a first attempt produced 755 divs where the
-  JavaScript makes 40, so the condition is narrower than the obvious reading.
-  Left unimplemented rather than guessed at — see the note in `src/block.c`.
 - **Positions.** Nodes carry `line`/`column` fields but the emitter does not
   write them, and the harness drops them from both sides. mdy-docs reports
   warnings against them, so they are part of the contract eventually.

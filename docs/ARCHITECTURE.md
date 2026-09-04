@@ -56,7 +56,22 @@ columns is one level — so the source is split into a measured line array befor
 any rule runs. Every rule needs the width before it needs the content, and
 measuring once is cheaper than measuring per rule.
 
-**Block rules** consume runs of lines. The one subtlety worth knowing is that
+**Block rules** consume runs of lines, at a **column** passed in rather than
+inferred. That parameter carries the one rule everything else hangs off:
+indentation is structural, so a line further in than its run is a block of its
+own. At the root the column is 0 — a document whose first line is indented
+opens with a `<div>` — while inside an element it is that element's children's
+own indentation, or every child would get one. Inferring it from the first line
+gets the root case wrong; inferring it from the parent gets the element case
+wrong, and a first attempt that inferred it made 755 divs where the JavaScript
+makes 40.
+
+Three constructs claim indentation before that rule sees it: an element opener
+takes its indented lines as children, a list item absorbs its continuation
+lines, and a paragraph stops at any change of column. What is left over is a
+div.
+
+ The one subtlety worth knowing is that
 block children of an *element* are separated by newline text nodes (`"\n" p
 "\n" p "\n"`) and block children of the *root* are not. That asymmetry is the
 JavaScript's, it is what makes stringified HTML come out one block per line
@@ -97,6 +112,18 @@ skipped for a first cut, and that is wrong: `<td scope="col">` produces no
 `scope` in the tree, because `scope` is allowed on `<th>` and not on `<td>`.
 Skipping the check does not produce "slightly more" tree — it produces a
 different one.
+
+## What is not here, on purpose
+
+**Syntax highlighting.** It is a decoration of a tree that is already correct —
+a `<code>` element's single text node becomes a run of `<span class="hljs-…">`
+— so it is the clearest example of a stage that does not need to be in C at
+all. The parse produces the tree; the VM can decorate it afterwards.
+
+That division is worth stating generally, because it is the argument for this
+whole repo: **hast is the extension point, and moving the parse does not move
+it.** Anything that reads a finished tree and returns another one stays where
+it is.
 
 ## Emitting
 

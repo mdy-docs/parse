@@ -149,7 +149,18 @@ typedef struct {
     uint32_t number;    /* 1-based line number in the original file */
 } mdy_line;
 
-void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size_t count);
+/*
+ * Parse a run of lines as blocks into `parent`.
+ *
+ * `base` is the column this run sits at, and it has to be passed rather than
+ * inferred: a line further in than `base` is a block of its own and gets a
+ * <div>. At the root that is 0 — so a document whose FIRST line is indented
+ * still gets a div — while inside an element it is that element's children's
+ * own indentation, or every child would get one. Inferring it from the first
+ * line gets the root case wrong; inferring it from the parent gets the element
+ * case wrong.
+ */
+void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size_t count, size_t base);
 
 /* Parse inline content into `parent`. The one entry point the block parser
  * uses, so everything textual goes through the same rules. */

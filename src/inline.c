@@ -174,8 +174,15 @@ static void flush(Ctx *ctx) {
 static const char *slug_of(mdy_doc *doc, const char *s, size_t len, size_t *out_len);
 static size_t wiki_link(Ctx *ctx, const char *p, size_t left);
 
-/** Replace every <a> among `parent`'s children with its own children. */
+/*
+ * Replace every <a> in the subtree with its own children — RECURSIVELY, which
+ * is what the JavaScript does: a link nested two deep inside a wiki link's
+ * label is still a link inside a link, and still not a thing.
+ */
 static void unwrap_links(mdy_node *parent) {
+    for (mdy_node *child = parent->first; child; child = child->next)
+        if (child->type == MDY_ELEMENT) unwrap_links(child);
+
     mdy_node *first = NULL, *last = NULL;
     for (mdy_node *child = parent->first; child;) {
         mdy_node *next = child->next;

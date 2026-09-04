@@ -168,6 +168,48 @@ int main(void) {
     check("a closing > makes the rest inline content", "<figcaption>caption text",
           ROOT(EL("figcaption", "", TX("caption text"))), &o);
 
+    printf("--- mdyast: block structure ---\n");
+    /* Indentation is structural: a line further in than its run is a block of
+     * its own. It applies at the start of a document too. */
+    check("an indented line gets a div", "top\n  in",
+          ROOT(EL("p", "", TX("top")) ","
+               EL("div", "", TX("\\n") "," EL("p", "", TX("in")) "," TX("\\n"))), &o);
+    check("…including the first line", "  only indented",
+          ROOT(EL("div", "", TX("\\n") "," EL("p", "", TX("only indented")) "," TX("\\n"))), &o);
+    check("a list item absorbs its continuation", "- one\n  two",
+          ROOT(EL("ul", "", TX("\\n") "," EL("li", "", TX("one two")) "," TX("\\n"))), &o);
+    check("a deeper marker nests a list", "- a\n  - b",
+          ROOT(EL("ul", "", TX("\\n") ","
+                  EL("li", "", TX("a") "," TX("\\n") ","
+                     EL("ul", "", TX("\\n") "," EL("li", "", TX("b")) "," TX("\\n")) ","
+                     TX("\\n")) ","
+                  TX("\\n"))), &o);
+
+    printf("--- mdyast: setext underlining ---\n");
+    check("= underlines to h1", "Title\n=====",
+          ROOT(EL("h1", "\"id\":\"title\"", TX("Title"))), &o);
+    /* FOUR or more hyphens. Three is a thematic break, and the paragraph above
+     * it stands on its own. */
+    check("four - underline to h2", "Title\n----",
+          ROOT(EL("h2", "\"id\":\"title\"", TX("Title"))), &o);
+    check("three - is a break, not an underline", "Title\n---",
+          ROOT(EL("p", "", TX("Title")) "," EL("hr", "", "")), &o);
+
+    printf("--- mdyast: task lists ---\n");
+    check("a task list", "- [ ] todo\n- [x] done",
+          ROOT(EL("ul", "\"className\":[\"contains-task-list\"]", TX("\\n") ","
+                  EL("li", "\"className\":[\"task-list-item\"]",
+                     EL("input", "\"type\":\"checkbox\",\"checked\":false,\"disabled\":true", "") ","
+                     TX(" ") "," TX("todo")) "," TX("\\n") ","
+                  EL("li", "\"className\":[\"task-list-item\"]",
+                     EL("input", "\"type\":\"checkbox\",\"checked\":true,\"disabled\":true", "") ","
+                     TX(" ") "," TX("done")) "," TX("\\n"))), &o);
+
+    printf("--- mdyast: heading ids are unique ---\n");
+    check("a repeated heading gets a suffix", "= Same\n\n= Same",
+          ROOT(EL("h1", "\"id\":\"same\"", TX("Same")) ","
+               EL("h1", "\"id\":\"same-1\"", TX("Same"))), &o);
+
     printf("\n%s\n", failures ? "FAILURES" : "all checks passed");
     return failures ? 1 : 0;
 }
