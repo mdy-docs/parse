@@ -22,7 +22,7 @@ CFLAGS  += -std=c11 -Wall -Wextra -Wshadow -O2 -g -Iinclude -Isrc -Ithird_party/
 MD4C_INC := -Ithird_party/md4c/src
 MD4C_SRCS := third_party/md4c/src/md4c.c third_party/md4c/src/entity.c
 
-SRCS := src/arena.c src/ast.c src/attrs.c src/unicode.c src/linkify.c src/emoji.c src/footnote.c src/inline.c src/block.c src/html.c src/script.c src/yaml.c src/data.c src/markdown.c
+SRCS := src/arena.c src/ast.c src/attrs.c src/unicode.c src/linkify.c src/emoji.c src/footnote.c src/inline.c src/block.c src/html.c src/script.c src/yaml.c src/data.c src/markdown.c src/doc.c
 OBJS := $(patsubst src/%.c,build/%.o,$(SRCS))
 
 # Where mdy-docs lives, for the comparison harness. Nothing in the library
@@ -41,7 +41,7 @@ build/markdown.o: src/markdown.c include/mdymarkdown.h src/internal.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(MD4C_INC) -c $< -o $@
 
-build/%.o: src/%.c include/mdyast.h include/mdyhtml.h include/mdyscript.h include/mdyyaml.h include/mdydata.h include/mdymarkdown.h src/internal.h
+build/%.o: src/%.c include/mdyast.h include/mdyhtml.h include/mdyscript.h include/mdyyaml.h include/mdydata.h include/mdymarkdown.h include/mdydoc.h src/internal.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -79,6 +79,11 @@ build/smoke: test/smoke.c build/libmdyast.a
 build/html: test/html.c build/libmdyast.a
 	@mkdir -p build
 	$(CC) $(CFLAGS) test/html.c build/libmdyast.a -o $@
+
+# A source split into documents, and each into front matter and body.
+build/doccat: test/doccat.c build/libmdyast.a
+	@mkdir -p build
+	$(CC) $(CFLAGS) test/doccat.c build/libmdyast.a -o $@
 
 # Markdown in, the hast tree as JSON out — the other half of check-markdown.
 build/mdcat: test/mdcat.c build/libmdyast.a
