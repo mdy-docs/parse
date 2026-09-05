@@ -588,6 +588,23 @@ int main(void) {
                    expect, &o);
     }
 
+    /* A caption line ends a paragraph, which is what makes `| One` prose and
+     * `| Two` the caption of the table beneath it. */
+    check_refs("only the line against the table is the caption — refs unaffected",
+               "| One\n| Two\n| a | b |\n| - | - |", "", &o);
+    {
+        char expect[1400];
+        snprintf(expect, sizeof expect, "{\"type\":\"root\",\"children\":[%s,%s]}",
+                 EL("p", "", TX("| One")),
+                 EL("table", "", TX("\\n") ","
+                    EL("caption", "", TX("Two")) "," TX("\\n") ","
+                    EL("thead", "", TX("\\n") ","
+                       EL("tr", "", TX("\\n") "," EL("th", "", TX("a")) "," TX("\\n") ","
+                          EL("th", "", TX("b")) "," TX("\\n")) "," TX("\\n")) "," TX("\\n")));
+        check("a caption line ends the paragraph above it",
+              "| One\n| Two\n| a | b |\n| - | - |", expect, &o);
+    }
+
     printf("--- mdyast: table bodies ---\n");
     /* A row WITHOUT a pipe is still a row: a short one, padded to the
      * header's width. What ends a table is a blank line, an element opener,
@@ -624,6 +641,11 @@ int main(void) {
     check("…and somebody else's URL is left as written",
           "[[ x | https://Example.COM/Path ]]",
           ROOT(EL("p", "", EL("a", "\"href\":\"https://Example.COM/Path\"", TX("x")))), &o);
+    /* A hand-written <a href> to a page of ours is tidied the same way. */
+    check("a hand-written href is tidied too", "<a href=\"/Docs/API Reference\">x",
+          ROOT(EL("a", "\"href\":\"/docs/api-reference\"", TX("x"))), &o);
+    check_refs("…and written down", "<a href=\"/Docs/API Reference\">x",
+               "0:link:/docs/api-reference", &o);
     check("a wiki link follows the schema for protocols",
           "[[ x | javascript:alert(1) ]]",
           ROOT(EL("p", "", EL("a", "", TX("x")))), &o);

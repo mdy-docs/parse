@@ -502,6 +502,22 @@ static void parse_attributes(mdy_doc *doc, mdy_node *el, const char *tag,
         const char *hast = mdy_hast_name(doc, name, name_len);
         if (!has_value) { mdy_set_bool(doc, el, hast, 1); continue; }
 
+        /*
+         * A hand-written `<a href>` to a page of OURS is tidied exactly as a
+         * wiki link's is, and written down the same way. Somebody else's URL
+         * is theirs, case and all, and a fragment names an id.
+         */
+        if (strcmp(tag, "a") == 0 && strcmp(hast, "href") == 0 &&
+            mdy_link_kind_page(value, value_len)) {
+            char tidy[1024];
+            if (value_len < sizeof tidy) {
+                size_t tn = mdy_normalize_link(value, value_len, tidy, sizeof tidy);
+                mdy_set_string(doc, el, hast, tidy, tn);
+                mdy_collect(doc, MDY_REF_LINK, tidy, tn);
+                continue;
+            }
+        }
+
         if (strcmp(hast, "className") == 0) {
             /* A class attribute is a space-separated list, and hast keeps it
              * as one. A repeated attribute replaces — properties is an object. */
@@ -1507,10 +1523,16 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
             const char *fl = NULL;
             size_t fll = 0;
             if (j > i && fence_opener(&lines[j], &fence_here, &fl, &fll)) break;
-            /* …and so does a table: a header row and its delimiter under a
-             * line of prose start the table, they do not join the sentence. */
-            if (j > i && memchr(lines[j].text, '|', lines[j].len) && j + 1 < count &&
-                table_rows(lines, count, j, base)) break;
+            /*
+             * …and so does a table: a header row and its delimiter under a
+             * line of prose start the table, they do not join the sentence.
+             * A CAPTION line does too, which is what makes `| One` a
+             * paragraph and `| Two` the caption of the table beneath it.
+             */
+            if (j > i && memchr(lines[j].text, '|', lines[j].len) && j + 1 < count) {
+                size_t h = caption_at(lines, count, j) ? j + 1 : j;
+                if (h + 1 < count && table_rows(lines, count, h, base)) break;
+            }
             if (j > i && (lines[j].text[0] == '=' || lines[j].text[0] == '<' ||
                           list_marker(&lines[j], &ordered_here) ||
                           thematic_break(&lines[j]))) break;

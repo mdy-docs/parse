@@ -57,7 +57,7 @@ static const Marker *marker_at(const char *p, size_t left) {
  * page, `//host` or a `^[a-z][a-z0-9+.-]*:` scheme is somebody else's, and
  * everything left — a path, a name, a relative step upward — is a page.
  */
-static int link_kind_page(const char *s, size_t len) {
+int mdy_link_kind_page(const char *s, size_t len) {
     if (len == 0) return 0;
     if (s[0] == '#') return 0;
     if (len >= 2 && s[0] == '/' && s[1] == '/') return 0;
@@ -82,7 +82,7 @@ static int link_kind_page(const char *s, size_t len) {
  * `getting-started` should not be two of them. The lowercasing is Unicode's,
  * not ASCII's — the same rule the rest of this file uses.
  */
-static size_t normalize_link(const char *s, size_t len, char *out, size_t cap) {
+size_t mdy_normalize_link(const char *s, size_t len, char *out, size_t cap) {
     size_t o = 0;
     size_t i = 0;
     while (i < len && o + 8 < cap) {
@@ -705,8 +705,8 @@ static size_t wiki_link(Ctx *ctx, const char *p, size_t left) {
                         (int)label_len, label);
     } else {
         char tidy[1024];
-        if (link_kind_page(target, target_len) && target_len < sizeof tidy) {
-            size_t n = normalize_link(target, target_len, tidy, sizeof tidy);
+        if (mdy_link_kind_page(target, target_len) && target_len < sizeof tidy) {
+            size_t n = mdy_normalize_link(target, target_len, tidy, sizeof tidy);
             mdy_set_string(ctx->doc, a, "href", tidy, n);
             mdy_collect(ctx->doc, MDY_REF_LINK, tidy, n);
         } else {

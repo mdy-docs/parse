@@ -134,6 +134,12 @@ struct mdy_doc {
  * written, in order, and only once each. */
 void mdy_collect(mdy_doc *doc, mdy_ref_kind kind, const char *name, size_t len);
 
+/* `linkKind(href) === 'page'` — not a fragment, not somebody else's URL. */
+int mdy_link_kind_page(const char *s, size_t len);
+
+/* `href.toLowerCase().replace(/\s+/g, '-')`, for a page of ours. */
+size_t mdy_normalize_link(const char *s, size_t len, char *out, size_t cap);
+
 
 
 /* ---- building ------------------------------------------------------------ */
