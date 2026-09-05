@@ -12,6 +12,7 @@
 
 #include "mdyast.h"
 #include "mdyhtml.h"
+#include "mdyscript.h"
 
 static char *read_all(FILE *f, size_t *len) {
     size_t cap = 1 << 16, used = 0;
@@ -31,13 +32,28 @@ static char *read_all(FILE *f, size_t *len) {
     return buf;
 }
 
-static int emit_file(const char *path, const mdy_options *options, int stats, int messages, int html) {
+static int emit_file(const char *path, const mdy_options *options, int stats, int messages, int html, int script) {
     FILE *f = path ? fopen(path, "rb") : stdin;
     if (!f) { fprintf(stderr, "mdyast: cannot read %s\n", path); return 1; }
     size_t len = 0;
     char *text = read_all(f, &len);
     if (path) fclose(f);
     if (!text) { fprintf(stderr, "mdyast: out of memory\n"); return 1; }
+
+    if (script) {
+        /* The script layer runs BEFORE the parser — the statements produce the
+         * lines the parser then reads — so this path never builds a tree. */
+        mdy_script *s = mdy_script_compile(text, len);
+        if (s) {
+            size_t n = 0;
+            const char *src = mdy_script_source(s, &n);
+            fwrite(src, 1, n, stdout);
+            fputc('\n', stdout);
+            mdy_script_free(s);
+        }
+        free(text);
+        return s ? 0 : 1;
+    }
 
     mdy_doc *doc = mdy_parse(text, len, options);
     free(text);
@@ -90,6 +106,7 @@ int main(int argc, char **argv) {
     int stats = 0;
     int messages = 0;
     int html = 0;
+    int script = 0;
     int files = 0, rc = 0;
 
     for (int i = 1; i < argc; i++) {
@@ -101,13 +118,14 @@ int main(int argc, char **argv) {
         if (strcmp(a, "--stats") == 0) { stats = 1; continue; }
         if (strcmp(a, "--messages") == 0) { messages = 1; continue; }
         if (strcmp(a, "--html") == 0) { html = 1; continue; }
+        if (strcmp(a, "--script") == 0) { script = 1; continue; }
         if (a[0] == '-' && a[1] == '-') {
             fprintf(stderr, "mdyast: unknown option %s\n", a);
             return 2;
         }
-        rc |= emit_file(a, &options, stats, messages, html);
+        rc |= emit_file(a, &options, stats, messages, html, script);
         files++;
     }
-    if (files == 0) rc |= emit_file(NULL, &options, stats, messages, html);
+    if (files == 0) rc |= emit_file(NULL, &options, stats, messages, html, script);
     return rc;
 }

@@ -4,6 +4,7 @@
 #   make test       the C checks (no node needed)
 #   make compare    diff this against mdy-docs' JavaScript over a real corpus
 #   make check-html diff the HTML writer against hast-util-to-html
+#   make check-script diff the script compiler against compileScript
 #   make bench      how long each takes on the same input
 #
 # See README.md for what this is for and docs/ARCHITECTURE.md for how it works.
@@ -12,7 +13,7 @@ CC      ?= cc
 AR      ?= ar
 CFLAGS  += -std=c11 -Wall -Wextra -Wshadow -O2 -g -Iinclude -Isrc -Ithird_party/baru-re/include
 
-SRCS := src/arena.c src/ast.c src/attrs.c src/unicode.c src/linkify.c src/emoji.c src/footnote.c src/inline.c src/block.c src/html.c
+SRCS := src/arena.c src/ast.c src/attrs.c src/unicode.c src/linkify.c src/emoji.c src/footnote.c src/inline.c src/block.c src/html.c src/script.c
 OBJS := $(patsubst src/%.c,build/%.o,$(SRCS))
 
 # Where mdy-docs lives, for the comparison harness. Nothing in the library
@@ -26,7 +27,7 @@ SITE     ?= $(HOME)/projects/mdy-wikipedia-web/site
 
 all: build/mdyast
 
-build/%.o: src/%.c include/mdyast.h include/mdyhtml.h src/internal.h
+build/%.o: src/%.c include/mdyast.h include/mdyhtml.h include/mdyscript.h src/internal.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -57,13 +58,19 @@ build/html: test/html.c build/libmdyast.a
 	@mkdir -p build
 	$(CC) $(CFLAGS) test/html.c build/libmdyast.a -o $@
 
-.PHONY: all test compare bench clean check-html
+# The script layer, on documents, with no engine anywhere.
+build/script: test/script.c build/libmdyast.a
+	@mkdir -p build
+	$(CC) $(CFLAGS) test/script.c build/libmdyast.a -o $@
+
+.PHONY: all test compare bench clean check-html check-script
 # build/mdyast too, though the checks do not use it: every probe reached for it
 # by hand at some point, found yesterday's binary, and reported a bug that had
 # already been fixed. Building it here costs a second and stops that.
-test: build/smoke build/html build/mdyast build/linkify
+test: build/smoke build/html build/script build/mdyast build/linkify
 	@./build/smoke
 	@./build/html
+	@./build/script
 
 # The check that actually matters. A 4,441-line parser is not ported by
 # reading it; it is ported by producing the same tree for a real corpus,
@@ -75,6 +82,11 @@ compare: build/mdyast
 # `hast-util-to-html` over the corpus, byte for byte?
 check-html: build/mdyast
 	@node test/compare-html.mjs --mdy-docs "$(MDY_DOCS)" --corpus "$(SITE)"
+
+# And the script layer: same document in, byte-identical JavaScript out. A
+# difference here is different BEHAVIOUR, not a different tree.
+check-script: build/mdyast
+	@node test/compare-script.mjs --mdy-docs "$(MDY_DOCS)" --corpus "$(SITE)"
 
 bench: build/mdyast
 	@node test/compare.mjs --mdy-docs "$(MDY_DOCS)" --corpus "$(CORPUS)" --bench

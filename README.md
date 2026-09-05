@@ -1,6 +1,7 @@
 # mdyast
 
-MDY document text to a hast tree, in C — and the tree back out as HTML.
+The MDY front end in C: a document's script layer to JavaScript, its text to a
+hast tree, and the tree back out as HTML.
 
 An investigation that grew into most of a parser. It answers a specific
 question with running code rather than an estimate — *what would it take to
@@ -125,6 +126,7 @@ make             # the library and the CLI
 make test        # the C checks, no node needed
 make compare     # diff the PARSER against mdy-docs' JavaScript over a corpus
 make check-html  # diff the WRITER against hast-util-to-html
+make check-script # diff the SCRIPT layer against compileScript
 make check-links # diff the URL matching against linkify-it
 make bench       # how long each takes on the same input
 ```
@@ -160,6 +162,44 @@ JSON is the emitter that exists because it is what the comparison harness
 needs. A host embedding this would want its own — building QuickJS objects
 directly, or binjson for the WASM path — and the tree is deliberately
 independent of any of them.
+
+## The script layer: a document to JavaScript
+
+```c
+#include "mdyscript.h"
+
+mdy_script *script = mdy_script_compile(text, len);
+size_t n = 0;
+const char *statements = mdy_script_source(script, &n);   /* hand to a sandbox */
+mdy_script_free(script);
+```
+
+A document's `%` and `%%` lines are JavaScript and its content lines are
+template literals, so a document compiles to the one run of statements that
+produces its lines:
+
+```
+% for (const name of names) {        const __out = []
+- {{ name }}                 ──►     for (const name of names) {
+% }                                    __out.push([1, `- ${name}`])
+                                     }
+```
+
+A port of mdy-docs' `src/parse/script.js`. **What runs the statements is
+somebody else's business** — this produces source and knows about no engine,
+which is what lets a host compile a document ONCE and call the result per
+render, because the statements never mention the request.
+
+`make check-script` holds it against the original: 145/145 documents, 14 MB of
+JavaScript, byte-identical, plus the `code` map that says which lines went in
+as code. `test/script.c` covers what a corpus does not — a brace inside a
+string, inside a comment, inside a `${}`; a `%%` that never closes; an escaped
+sigil; CRLF — and every expectation there was taken from `compileScript`
+rather than reasoned out. A difference at this stage is not a different tree,
+it is different behaviour.
+
+`scriptBrackets` is not ported: it pairs brackets up for an editor to fold and
+highlight, which is tooling rather than compilation.
 
 ## The other direction: hast to HTML
 
