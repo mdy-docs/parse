@@ -167,24 +167,10 @@ int mdy_protocol_allowed_n(const char *attr, size_t attr_len,
  * generated UCD tables rather than approximating them. */
 int mdy_is_letter_or_number_cp(uint32_t cp);
 
-/* Whitespace as JavaScript means it, and a trim that uses it — String.trim
- * removes no-break spaces and the Unicode separators, and an ASCII-only trim
- * leaves them in a link's text. */
-int mdy_is_js_space(uint32_t cp);
-void mdy_trim(const char **s, size_t *len);
-void mdy_trim_end(const char **s, size_t *len);
-uint32_t mdy_lower_cp(uint32_t cp);
-
-/* Decode one UTF-8 character, returning its width in bytes; an ill-formed
- * sequence is one byte and U+FFFD. Encode one, into 4 bytes of `out`. */
-size_t mdy_utf8_decode(const char *p, size_t left, uint32_t *out);
-size_t mdy_utf8_encode(uint32_t cp, char *out);
-
-/* The UTF-16 boundary — what a JavaScript engine's strings are, and what
- * unist positions count in. Astral characters are two units, not one. */
-size_t mdy_utf16_length(const char *s, size_t len);
-size_t mdy_to_utf16(const char *s, size_t len, uint16_t *out, size_t cap);
-size_t mdy_from_utf16(const uint16_t *units, size_t count, char *out, size_t cap);
+/* Unicode case, UTF-8 and the UTF-16 boundary are PUBLIC — an embedder needs
+ * the same answers the parser does, and a host that lowercases only ASCII
+ * disagrees with JavaScript the moment a document is not in English. */
+#include "mdytext.h"
 
 /* Where a bare `[[ label ]]` points — mdy-docs' defaultResolve. Headings use
  * it too, so a heading and a link written from the same text agree; it is NOT
