@@ -164,6 +164,33 @@ needs. A host embedding this would want its own — building QuickJS objects
 directly, or binjson for the WASM path — and the tree is deliberately
 independent of any of them.
 
+## The data a document declares
+
+```c
+#include "mdydata.h"
+
+mdy_data *data = mdy_data_extract(body, len);
+for (size_t i = 0; i < mdy_data_count(data); i++)
+    mdy_yaml_parse(mdy_data_at(data, i)->source, ...);   /* merged over front matter */
+const char *without = mdy_data_body(data, &len);         /* what the script compiles */
+mdy_data_free(data);
+```
+
+A ` ```data ` fence is YAML the document declares in its body, merged over its
+front matter. It comes out before a line of the document's code runs, which is
+what makes the fences order-independent — code may reference data declared
+anywhere, even below it.
+
+The subtlety is fence STATE, not pattern matching: a ` ```data ` shown inside a
+longer outer fence is an example, and only a scanner that knows it is already
+inside one can tell. Its info must be exactly `data`, so ` ```data foo ` stays
+display content.
+
+**This project contains no data fences at all** — 189 files, none — so the
+corpus proves nothing here and `test/data.c`'s twelve constructed cases are
+the whole of the coverage. Every expectation came from mdy-docs'
+`extractDataBlocks`, which locates them with a real CommonMark parse.
+
 ## YAML
 
 ```c

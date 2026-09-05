@@ -14,7 +14,7 @@ CC      ?= cc
 AR      ?= ar
 CFLAGS  += -std=c11 -Wall -Wextra -Wshadow -O2 -g -Iinclude -Isrc -Ithird_party/baru-re/include
 
-SRCS := src/arena.c src/ast.c src/attrs.c src/unicode.c src/linkify.c src/emoji.c src/footnote.c src/inline.c src/block.c src/html.c src/script.c src/yaml.c
+SRCS := src/arena.c src/ast.c src/attrs.c src/unicode.c src/linkify.c src/emoji.c src/footnote.c src/inline.c src/block.c src/html.c src/script.c src/yaml.c src/data.c
 OBJS := $(patsubst src/%.c,build/%.o,$(SRCS))
 
 # Where mdy-docs lives, for the comparison harness. Nothing in the library
@@ -28,7 +28,7 @@ SITE     ?= $(HOME)/projects/mdy-wikipedia-web/site
 
 all: build/mdyast
 
-build/%.o: src/%.c include/mdyast.h include/mdyhtml.h include/mdyscript.h include/mdyyaml.h src/internal.h
+build/%.o: src/%.c include/mdyast.h include/mdyhtml.h include/mdyscript.h include/mdyyaml.h include/mdydata.h src/internal.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -59,6 +59,16 @@ build/html: test/html.c build/libmdyast.a
 	@mkdir -p build
 	$(CC) $(CFLAGS) test/html.c build/libmdyast.a -o $@
 
+# ```data fences, on constructed cases — this project has none.
+build/data: test/data.c build/libmdyast.a
+	@mkdir -p build
+	$(CC) $(CFLAGS) test/data.c build/libmdyast.a -o $@
+
+# Data fences in, their YAML and the remaining body out.
+build/datacat: test/datacat.c build/libmdyast.a
+	@mkdir -p build
+	$(CC) $(CFLAGS) test/datacat.c build/libmdyast.a -o $@
+
 # YAML, on its own — the language, and what it refuses.
 build/yaml: test/yaml.c build/libmdyast.a
 	@mkdir -p build
@@ -84,11 +94,12 @@ build/script: test/script.c build/libmdyast.a
 # build/mdyast too, though the checks do not use it: every probe reached for it
 # by hand at some point, found yesterday's binary, and reported a bug that had
 # already been fixed. Building it here costs a second and stops that.
-test: build/smoke build/html build/script build/yaml build/mdyast build/linkify
+test: build/smoke build/html build/script build/yaml build/data build/mdyast build/linkify
 	@./build/smoke
 	@./build/html
 	@./build/script
 	@./build/yaml
+	@./build/data
 
 # The check that actually matters. A 4,441-line parser is not ported by
 # reading it; it is ported by producing the same tree for a real corpus,
