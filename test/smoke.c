@@ -412,6 +412,54 @@ int main(void) {
     check("a fence interrupts a paragraph", "text\n```\ncode\n```",
           ROOT(EL("p", "", TX("text")) "," EL("pre", "", EL("code", "", TX("code\\n")))), &o);
 
+    printf("--- mdyast: table captions ---\n");
+    /*
+     * A caption is written exactly the way a one-column table's header is,
+     * and what tells them apart is what comes NEXT: a header has a delimiter
+     * row under it, a caption has a table.
+     */
+    check("a single-cell pipe line above a table captions it",
+          "| Table 1. |\n| a | b |\n| - | - |",
+          ROOT(EL("table", "", TX("\\n") ","
+                  EL("caption", "", TX("Table 1.")) "," TX("\\n") ","
+                  EL("thead", "", TX("\\n") ","
+                     EL("tr", "", TX("\\n") "," EL("th", "", TX("a")) "," TX("\\n") ","
+                        EL("th", "", TX("b")) "," TX("\\n")) "," TX("\\n")) "," TX("\\n"))), &o);
+    /*
+     * Two cells is not a caption, and neither is an empty one. The line stays
+     * a paragraph — and the table under it is still a table, because the
+     * paragraph rule stops at a header-and-delimiter pair.
+     */
+    {
+        const char *table_ab =
+            EL("table", "", TX("\\n") ","
+               EL("thead", "", TX("\\n") ","
+                  EL("tr", "", TX("\\n") "," EL("th", "", TX("a")) "," TX("\\n") ","
+                     EL("th", "", TX("b")) "," TX("\\n")) "," TX("\\n")) "," TX("\\n"));
+        char expect[1024];
+        snprintf(expect, sizeof expect, "{\"type\":\"root\",\"children\":[%s,%s]}",
+                 EL("p", "", TX("| One | Two |")), table_ab);
+        check("only a ONE-cell line is a caption", "| One | Two |\n| a | b |\n| - | - |",
+                   expect, &o);
+        snprintf(expect, sizeof expect, "{\"type\":\"root\",\"children\":[%s,%s]}",
+                 EL("p", "", TX("| |")), table_ab);
+        check("an empty pipe line is not a caption", "| |\n| a | b |\n| - | - |",
+                   expect, &o);
+    }
+
+    printf("--- mdyast: table bodies ---\n");
+    /* A row WITHOUT a pipe is still a row: a short one, padded to the
+     * header's width. What ends a table is a blank line, an element opener,
+     * a heading, a thematic break or an indent — not a missing pipe. */
+    check("a line with no pipe is a short row", "| a | b |\n| - | - |\nonly one cell",
+          ROOT(EL("table", "", TX("\\n") ","
+                  EL("thead", "", TX("\\n") ","
+                     EL("tr", "", TX("\\n") "," EL("th", "", TX("a")) "," TX("\\n") ","
+                        EL("th", "", TX("b")) "," TX("\\n")) "," TX("\\n")) "," TX("\\n") ","
+                  EL("tbody", "", TX("\\n") ","
+                     EL("tr", "", TX("\\n") "," EL("td", "", TX("only one cell")) "," TX("\\n") ","
+                        EL("td", "", "") "," TX("\\n")) "," TX("\\n")) "," TX("\\n"))), &o);
+
     printf("--- mdyast: links, tags and arrows ---\n");
     /* An arrow may not stand against another character the table draws with,
      * so nothing inside `<--->` is one. */

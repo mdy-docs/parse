@@ -779,7 +779,7 @@ static int delimiter_row(const mdy_line *l, int *align, size_t want) {
 }
 
 /** How many lines the table at `i` occupies, or 0 if this is not one. */
-static size_t table_rows(const mdy_line *lines, size_t count, size_t i) {
+static size_t table_rows(const mdy_line *lines, size_t count, size_t i, size_t base) {
     const char *starts[64];
     size_t lens[64];
     size_t want = split_cells(&lines[i], starts, lens, 64);
@@ -787,9 +787,65 @@ static size_t table_rows(const mdy_line *lines, size_t count, size_t i) {
     int align[64];
     if (!delimiter_row(&lines[i + 1], align, want)) return 0;
 
+    /*
+     * The body runs until something else starts. A line WITHOUT a pipe is
+     * still a row — it is a short one, padded out to the header's width —
+     * so what ends the table is a blank line, a line indented past this
+     * block, an element opener, a heading or a thematic break, and nothing
+     * else.
+     */
     size_t j = i + 2;
-    while (j < count && !lines[j].blank && memchr(lines[j].text, '|', lines[j].len)) j++;
+    while (j < count) {
+        const mdy_line *r = &lines[j];
+        if (r->blank || r->indent >= base + 2) break;
+        if (r->text[0] == '<' || r->text[0] == '=') break;
+        if (thematic_break(r)) break;
+        j++;
+    }
     return j - i;
+}
+
+/*
+ * `\|` becomes `|` now that splitting is done, and every other escape is left
+ * to the inline parser. It has to happen HERE rather than there: a code span
+ * is raw, so the inline parser would never look inside one, and
+ * `| ``a \| b`` |` is a cell holding `a | b`.
+ */
+static void unescape_pipes(mdy_doc *doc, const char **text, size_t *len) {
+    if (!memchr(*text, '\\', *len)) return;
+    char *out = mdy_alloc(&doc->arena, *len + 1);
+    if (!out) return;
+    size_t o = 0;
+    for (size_t k = 0; k < *len; k++) {
+        if ((*text)[k] == '\\' && k + 1 < *len && (*text)[k + 1] == '|') continue;
+        out[o++] = (*text)[k];
+    }
+    out[o] = '\0';
+    *text = out;
+    *len = o;
+}
+
+/*
+ * A CAPTION at `i`: one cell, opening with a pipe, directly above a line that
+ * starts a table of its own.
+ *
+ * That last condition is the whole of it. A caption is written exactly the way
+ * a one-column table's header is, and what tells them apart is what comes
+ * next: a header has a delimiter row under it, a caption has a table.
+ */
+static int caption_at(const mdy_line *lines, size_t count, size_t i) {
+    if (lines[i].len == 0 || lines[i].text[0] != '|') return 0;
+    if (i + 2 >= count) return 0;
+
+    const char *starts[64];
+    size_t lens[64];
+    size_t cells = split_cells(&lines[i], starts, lens, 64);
+    if (cells != 1 || lens[0] == 0) return 0;
+
+    size_t header = split_cells(&lines[i + 1], starts, lens, 64);
+    if (header == 0 || !memchr(lines[i + 1].text, '|', lines[i + 1].len)) return 0;
+    int align[64];
+    return delimiter_row(&lines[i + 2], align, header);
 }
 
 static void add_cell(mdy_doc *doc, mdy_node *row, const char *tag, size_t tag_len,
@@ -802,25 +858,7 @@ static void add_cell(mdy_doc *doc, mdy_node *row, const char *tag, size_t tag_le
                           : "text-align: center";
         mdy_set_string(doc, cell, "style", style, strlen(style));
     }
-    /*
-     * `\\|` becomes `|` now that splitting is done, and every other escape is
-     * left to the inline parser. It has to happen HERE rather than there: a
-     * code span is raw, so the inline parser would never look inside one, and
-     * `| ``a \\| b`` |` is a cell holding `a | b`.
-     */
-    if (memchr(text, '\\', len)) {
-        char *out = mdy_alloc(&doc->arena, len + 1);
-        if (out) {
-            size_t o = 0;
-            for (size_t k = 0; k < len; k++) {
-                if (text[k] == '\\' && k + 1 < len && text[k + 1] == '|') continue;
-                out[o++] = text[k];
-            }
-            out[o] = '\0';
-            text = out;
-            len = o;
-        }
-    }
+    unescape_pipes(doc, &text, &len);
     mdy_parse_inline(doc, cell, text, len);
     mdy_set_position(cell, lines, row_line, row_line);
     mdy_append(row, mdy_new_text(doc, "\n", 1));
@@ -828,7 +866,7 @@ static void add_cell(mdy_doc *doc, mdy_node *row, const char *tag, size_t tag_le
 }
 
 static size_t parse_table(mdy_doc *doc, mdy_node *parent, const mdy_line *lines,
-                          size_t i, size_t rows) {
+                          size_t start, size_t i, size_t rows) {
     const char *starts[64];
     size_t lens[64];
     int align[64] = { 0 };
@@ -837,6 +875,28 @@ static size_t parse_table(mdy_doc *doc, mdy_node *parent, const mdy_line *lines,
 
     mdy_node *table = mdy_new_element(doc, "table", 5);
     mdy_append(table, mdy_new_text(doc, "\n", 1));
+
+    /*
+     * A <caption> is the table's FIRST child wherever it is meant to show:
+     * which side it renders on is `caption-side` in CSS, not a fact about the
+     * document.
+     */
+    if (start < i) {
+        const char *ctext;
+        size_t clen;
+        split_cells(&lines[start], starts, lens, 64);
+        ctext = starts[0];
+        clen = lens[0];
+        unescape_pipes(doc, &ctext, &clen);
+        mdy_node *cap = mdy_new_element(doc, "caption", 7);
+        mdy_parse_inline(doc, cap, ctext, clen);
+        mdy_set_position(cap, lines, start, start);
+        mdy_append(table, cap);
+        mdy_append(table, mdy_new_text(doc, "\n", 1));
+        /* The caption's split reused `starts`/`lens`; the header's cells are
+         * read from them below and have to be put back. */
+        columns = split_cells(&lines[i], starts, lens, 64);
+    }
 
     mdy_node *thead = mdy_new_element(doc, "thead", 5);
     mdy_append(thead, mdy_new_text(doc, "\n", 1));
@@ -872,7 +932,8 @@ static size_t parse_table(mdy_doc *doc, mdy_node *parent, const mdy_line *lines,
         mdy_append(table, mdy_new_text(doc, "\n", 1));
     }
 
-    mdy_set_position(table, lines, i, i + rows - 1);
+    /* The table's span opens at the CAPTION when there is one. */
+    mdy_set_position(table, lines, start, i + rows - 1);
     separate(doc, parent);
     mdy_append(parent, table);
     return i + rows;
@@ -1057,8 +1118,12 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
 
         /* --- a pipe table --- */
         if (memchr(l->text, '|', l->len) && i + 1 < count) {
-            size_t n = table_rows(lines, count, i);
-            if (n) { i = parse_table(doc, parent, lines, i, n); produced = 1; continue; }
+            /* A caption above the header pushes the look-ahead one line on. */
+            size_t head = caption_at(lines, count, i) ? i + 1 : i;
+            if (head + 1 < count) {
+                size_t n = table_rows(lines, count, head, base);
+                if (n) { i = parse_table(doc, parent, lines, i, head, n); produced = 1; continue; }
+            }
         }
 
         /* --- lists --- */
@@ -1270,7 +1335,7 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
             /* …and so does a table: a header row and its delimiter under a
              * line of prose start the table, they do not join the sentence. */
             if (j > i && memchr(lines[j].text, '|', lines[j].len) && j + 1 < count &&
-                table_rows(lines, count, j)) break;
+                table_rows(lines, count, j, base)) break;
             if (j > i && (lines[j].text[0] == '=' || lines[j].text[0] == '<' ||
                           list_marker(&lines[j], &ordered_here) ||
                           thematic_break(&lines[j]))) break;
