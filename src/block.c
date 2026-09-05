@@ -12,6 +12,7 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 
 #include "internal.h"
@@ -85,6 +86,76 @@ void mdy_set_position(mdy_node *node, const mdy_line *lines, size_t from, size_t
     node->column = 1;
     node->end_line = lines[to].number;
     node->end_column = lines[to].units + 1;
+}
+
+/* Room for one more message, or NULL when the arena is exhausted. */
+static mdy_message *next_message(mdy_doc *doc) {
+    if (doc->message_count == doc->message_cap) {
+        size_t want = doc->message_cap ? doc->message_cap * 2 : 8;
+        mdy_message *grown = mdy_alloc(&doc->arena, sizeof *grown * want);
+        if (!grown) return NULL;
+        for (size_t i = 0; i < doc->message_count; i++) grown[i] = doc->messages[i];
+        doc->messages = grown;
+        doc->message_cap = want;
+    }
+    return &doc->messages[doc->message_count++];
+}
+
+/*
+ * A warning about something the parser changed or dropped.
+ *
+ * The place is the same span a block element on that line would carry, which
+ * is what `warn(reason, line, ruleId)` passes as `position(line, line)`.
+ */
+void mdy_warn(mdy_doc *doc, const mdy_line *lines, size_t line, const char *rule,
+              const char *fmt, ...) {
+    mdy_message *m = next_message(doc);
+    if (!m) return;
+
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+
+    m->reason = mdy_strdup_n(&doc->arena, buf, strlen(buf));
+    m->rule = rule;
+    m->line = lines[line].number;
+    m->column = 1;
+    m->end_line = lines[line].number;
+    m->end_column = lines[line].units + 1;
+}
+
+/*
+ * A warning with no PLACE.
+ *
+ * The inline parser works on a joined string and has no line to point at —
+ * and neither does the JavaScript's, which raises this one as
+ * `file.message(reason, {ruleId, source})` with no `place` at all. A message
+ * without a position is better than one with the wrong position.
+ */
+void mdy_warn_inline(mdy_doc *doc, const char *rule, const char *fmt, ...) {
+    mdy_message *m = next_message(doc);
+    if (!m) return;
+
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+
+    m->reason = mdy_strdup_n(&doc->arena, buf, strlen(buf));
+    m->rule = rule;
+    m->line = m->column = m->end_line = m->end_column = 0;
+}
+
+size_t mdy_message_count(const mdy_doc *doc) {
+    return doc ? doc->message_count : 0;
+}
+
+const mdy_message *mdy_message_at(const mdy_doc *doc, size_t i) {
+    if (!doc || i >= doc->message_count) return NULL;
+    return &doc->messages[i];
 }
 
 /* ---- small helpers ------------------------------------------------------- */
@@ -288,6 +359,7 @@ static size_t child_lines(const mdy_line *lines, size_t count, size_t i, size_t 
  * there is one. `*content` is set to whatever follows that `>`, or NULL.
  */
 static void parse_attributes(mdy_doc *doc, mdy_node *el, const char *tag,
+                             const mdy_line *lines, size_t line,
                              const char *p, size_t len,
                              const char **content, size_t *content_len) {
     *content = NULL;
@@ -338,11 +410,37 @@ static void parse_attributes(mdy_doc *doc, mdy_node *el, const char *tag,
             i = save;   /* a bare name — `hidden` */
         }
 
-        if (doc->options.sanitize && !mdy_attr_allowed(tag, name, name_len)) continue;
+        /*
+         * The schema matches on the LOWERCASED name — `attribute.name
+         * .toLowerCase()` — and the attribute that survives carries that
+         * spelling into hast, so `DATA-x-Y` sanitised is `dataXY` where
+         * unsanitised it is `dataX-Y`.
+         */
+        char lowered[256];
+        if (doc->options.sanitize && name_len < sizeof lowered) {
+            for (size_t k = 0; k < name_len; k++) {
+                char c = name[k];
+                lowered[k] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+            }
+            name = lowered;
+        }
+
+        if (doc->options.sanitize && !mdy_attr_allowed(tag, name, name_len)) {
+            mdy_warn(doc, lines, line, "sanitize",
+                     "`%.*s` is not allowed on `<%s>`, dropping it",
+                     (int)name_len, name, tag);
+            continue;
+        }
+        if (doc->options.sanitize && has_value &&
+            !mdy_protocol_allowed_n(name, name_len, value, value_len)) {
+            mdy_warn(doc, lines, line, "sanitize",
+                     "`%.*s` points at a protocol that is not allowed, dropping it",
+                     (int)name_len, name);
+            continue;
+        }
 
         const char *hast = mdy_hast_name(doc, name, name_len);
         if (!has_value) { mdy_set_bool(doc, el, hast, 1); continue; }
-        if (doc->options.sanitize && !mdy_protocol_allowed(hast, value, value_len)) continue;
 
         if (strcmp(hast, "className") == 0) {
             /* A class attribute is a space-separated list, and hast keeps it
@@ -611,14 +709,24 @@ static size_t parse_element(mdy_doc *doc, mdy_node *parent,
     const char *schema_tag = tag;      /* the name the author wrote */
     const char *build = tag;           /* the name to build */
     if (doc->options.sanitize) {
-        if (mdy_tag_stripped(tag)) return child_lines(lines, count, i, l->indent);
-        if (!mdy_tag_allowed(tag)) { build = "div"; tag_len = 3; }
+        if (mdy_tag_stripped(tag)) {
+            mdy_warn(doc, lines, i, "sanitize",
+                     "`<%s>` is not allowed, dropping it and its content", tag);
+            return child_lines(lines, count, i, l->indent);
+        }
+        if (!mdy_tag_allowed(tag)) {
+            mdy_warn(doc, lines, i, "sanitize",
+                     "`<%s>` is not allowed, using `<div>` instead", tag);
+            build = "div";
+            tag_len = 3;
+        }
     }
 
     mdy_node *el = mdy_new_element(doc, build, tag_len);
     const char *content = NULL;
     size_t content_len = 0;
-    parse_attributes(doc, el, schema_tag, l->text + n, l->len - n, &content, &content_len);
+    parse_attributes(doc, el, schema_tag, lines, i, l->text + n, l->len - n,
+                     &content, &content_len);
 
     size_t end = child_lines(lines, count, i, l->indent);
 
@@ -628,7 +736,10 @@ static size_t parse_element(mdy_doc *doc, mdy_node *parent,
      * them whatever it would have anyway (a <div>, when they are indented).
      */
     if (is_void_element(build)) {
-        if (content) { trim(&content, &content_len); }
+        if (content) trim(&content, &content_len);
+        if ((content && content_len) || end > i + 1)
+            mdy_warn(doc, lines, i, "void-element",
+                     "`<%s>` cannot have content, ignoring it", build);
         mdy_set_position(el, lines, i, i);
         separate(doc, parent);
         mdy_append(parent, el);
@@ -1035,7 +1146,11 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
             while (body_len && body[body_len - 1] == '=') body_len--;
             trim(&body, &body_len);
 
-            if (depth > max) depth = max;
+            if (depth > max) {
+                mdy_warn(doc, lines, i, "heading-depth",
+                         "Heading level %zu is deeper than h%zu, clamping", depth, max);
+                depth = max;
+            }
             char tag[3] = { 'h', (char)('0' + (int)depth), '\0' };
             mdy_node *h = mdy_new_element(doc, tag, 2);
             mdy_parse_inline(doc, h, body, body_len);

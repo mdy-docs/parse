@@ -155,6 +155,24 @@ typedef struct mdy_doc mdy_doc;
  */
 mdy_doc *mdy_parse(const char *text, size_t len, const mdy_options *options);
 
+/*
+ * A warning about something the parser changed or dropped.
+ *
+ * mdy-docs reports these on the vfile — `file.message(reason, {place, ruleId,
+ * source: 'mdy'})` — and a build surfaces them to whoever wrote the document.
+ * They are part of what the front end produces, not a debugging aid: a
+ * `<script>` silently vanishing is a worse answer than one that says so.
+ */
+typedef struct {
+    const char *reason;   /* the sentence, already assembled */
+    const char *rule;     /* ruleId: "sanitize", "void-element", "heading-depth" */
+    uint32_t line, column;
+    uint32_t end_line, end_column;
+} mdy_message;
+
+size_t mdy_message_count(const mdy_doc *doc);
+const mdy_message *mdy_message_at(const mdy_doc *doc, size_t i);
+
 /* The root node of a parsed document. Valid until mdy_free. */
 const mdy_node *mdy_root(const mdy_doc *doc);
 

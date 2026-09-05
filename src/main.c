@@ -30,7 +30,7 @@ static char *read_all(FILE *f, size_t *len) {
     return buf;
 }
 
-static int emit_file(const char *path, const mdy_options *options, int stats) {
+static int emit_file(const char *path, const mdy_options *options, int stats, int messages) {
     FILE *f = path ? fopen(path, "rb") : stdin;
     if (!f) { fprintf(stderr, "mdyast: cannot read %s\n", path); return 1; }
     size_t len = 0;
@@ -42,7 +42,20 @@ static int emit_file(const char *path, const mdy_options *options, int stats) {
     free(text);
     if (!doc) { fprintf(stderr, "mdyast: parse failed\n"); return 1; }
 
-    if (stats) {
+    if (messages) {
+        /* `<line>:<col>-<line>:<col>: <reason>`, the shape a vfile message
+         * prints in — and just the reason when there is no place, which is
+         * how the inline warnings are raised. */
+        for (size_t i = 0; i < mdy_message_count(doc); i++) {
+            const mdy_message *m = mdy_message_at(doc, i);
+            if (m->line) {
+                printf("%u:%u-%u:%u: %s\n", m->line, m->column, m->end_line,
+                       m->end_column, m->reason);
+            } else {
+                printf("%s\n", m->reason);
+            }
+        }
+    } else if (stats) {
         printf("%s\t%zu bytes of source\t%zu bytes of tree\n",
                path ? path : "(stdin)", len, mdy_bytes(doc));
     } else {
@@ -57,6 +70,7 @@ int main(int argc, char **argv) {
     mdy_options options;
     mdy_options_default(&options);
     int stats = 0;
+    int messages = 0;
     int files = 0, rc = 0;
 
     for (int i = 1; i < argc; i++) {
@@ -66,13 +80,14 @@ int main(int argc, char **argv) {
         if (strcmp(a, "--no-autolink") == 0) { options.autolink = 0; continue; }
         if (strcmp(a, "--no-sanitize") == 0) { options.sanitize = 0; continue; }
         if (strcmp(a, "--stats") == 0) { stats = 1; continue; }
+        if (strcmp(a, "--messages") == 0) { messages = 1; continue; }
         if (a[0] == '-' && a[1] == '-') {
             fprintf(stderr, "mdyast: unknown option %s\n", a);
             return 2;
         }
-        rc |= emit_file(a, &options, stats);
+        rc |= emit_file(a, &options, stats, messages);
         files++;
     }
-    if (files == 0) rc |= emit_file(NULL, &options, stats);
+    if (files == 0) rc |= emit_file(NULL, &options, stats, messages);
     return rc;
 }

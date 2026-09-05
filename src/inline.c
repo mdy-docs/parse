@@ -693,8 +693,12 @@ static size_t wiki_link(Ctx *ctx, const char *p, size_t left) {
      * but only when it names a page of ours. Somebody else's URL is theirs,
      * case and all, and a fragment names an id.
      */
-    if (!ctx->doc->options.sanitize ||
-        mdy_protocol_allowed("href", target, target_len)) {
+    if (ctx->doc->options.sanitize &&
+        !mdy_protocol_allowed("href", target, target_len)) {
+        mdy_warn_inline(ctx->doc, "sanitize",
+                        "`[[%.*s]]` points at a protocol that is not allowed, dropping the link",
+                        (int)label_len, label);
+    } else {
         char tidy[1024];
         if (link_kind_page(target, target_len) && target_len < sizeof tidy) {
             size_t n = normalize_link(target, target_len, tidy, sizeof tidy);

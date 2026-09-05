@@ -207,6 +207,15 @@ int mdy_attr_allowed(const char *tag, const char *name, size_t len) {
  * disappear, which is the whole point — `javascript:` in an author's `href`
  * must not survive into the tree.
  */
+int mdy_protocol_allowed_n(const char *attr, size_t attr_len,
+                           const char *value, size_t len) {
+    char name[64];
+    if (attr_len >= sizeof name) return 1;
+    memcpy(name, attr, attr_len);
+    name[attr_len] = '\0';
+    return mdy_protocol_allowed(name, value, len);
+}
+
 int mdy_protocol_allowed(const char *attr, const char *value, size_t len) {
     int listed = 0;
     for (size_t i = 0; i < MDY_PROTOCOLS_COUNT; i++)

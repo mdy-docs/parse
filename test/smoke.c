@@ -28,6 +28,34 @@ static void check(const char *what, const char *source, const char *expected, co
     mdy_free(doc);
 }
 
+/* The warnings a source raises, as `line:col-line:col: reason` lines joined
+ * with `|` — the shape a vfile message prints in, and just the reason when
+ * there is no place. */
+static void check_messages(const char *what, const char *source,
+                           const char *expected, const mdy_options *o) {
+    mdy_doc *doc = mdy_parse(source, 0, o);
+    char got[1024];
+    size_t n = 0;
+    got[0] = '\0';
+    for (size_t i = 0; i < mdy_message_count(doc); i++) {
+        const mdy_message *m = mdy_message_at(doc, i);
+        if (n) n += (size_t)snprintf(got + n, sizeof got - n, "|");
+        if (m->line) {
+            n += (size_t)snprintf(got + n, sizeof got - n, "%u:%u-%u:%u: %s",
+                                  m->line, m->column, m->end_line, m->end_column, m->reason);
+        } else {
+            n += (size_t)snprintf(got + n, sizeof got - n, "%s", m->reason);
+        }
+    }
+    int ok = strcmp(got, expected) == 0;
+    printf("  %s  %s\n", ok ? "ok  " : "FAIL", what);
+    if (!ok) {
+        printf("      expected %s\n      actual   %s\n", expected, got);
+        failures++;
+    }
+    mdy_free(doc);
+}
+
 #define EL(tag, props, kids) "{\"type\":\"element\",\"tagName\":\"" tag "\",\"properties\":{" props "},\"children\":[" kids "]}"
 #define TX(v) "{\"type\":\"text\",\"value\":\"" v "\"}"
 #define ROOT(kids) "{\"type\":\"root\",\"children\":[" kids "]}"
@@ -411,6 +439,31 @@ int main(void) {
           ROOT(EL("pre", "", EL("code", "\"className\":[\"language-js\"]", TX("x\\n")))), &o);
     check("a fence interrupts a paragraph", "text\n```\ncode\n```",
           ROOT(EL("p", "", TX("text")) "," EL("pre", "", EL("code", "", TX("code\\n")))), &o);
+
+    printf("--- mdyast: messages ---\n");
+    /*
+     * A <script> silently vanishing is a worse answer than one that says so.
+     * These are compared against what mdy-docs puts on the vfile, text and
+     * place both — a build shows them to whoever wrote the document.
+     */
+    check_messages("a stripped element says so", "<script>\n  alert(1)",
+                   "1:1-1:9: `<script>` is not allowed, dropping it and its content", &o);
+    check_messages("…and an unknown one says what it became", "<blink>\n  content",
+                   "1:1-1:8: `<blink>` is not allowed, using `<div>` instead", &o);
+    check_messages("a dropped attribute names its element", "<img src=\"x\" onerror=\"y\">",
+                   "1:1-1:26: `onerror` is not allowed on `<img>`, dropping it", &o);
+    check_messages("a refused protocol says so", "<a href=\"javascript:alert(1)\">x",
+                   "1:1-1:32: `href` points at a protocol that is not allowed, dropping it", &o);
+    check_messages("content under a void element is reported", "<hr>\n  ignored",
+                   "1:1-1:5: `<hr>` cannot have content, ignoring it", &o);
+    check_messages("a clamped heading reports its own depth", "======== deep",
+                   "1:1-1:14: Heading level 8 is deeper than h6, clamping", &o);
+    /* No PLACE: the inline parser works on a joined string and has no line to
+     * point at, and neither does the JavaScript when it raises this one. */
+    check_messages("a refused wiki link has no place to point at",
+                   "[[ x | javascript:alert(1) ]]",
+                   "`[[x]]` points at a protocol that is not allowed, dropping the link", &o);
+    check_messages("a clean document raises nothing", "= Title\n\ntext", "", &o);
 
     printf("--- mdyast: table captions ---\n");
     /*

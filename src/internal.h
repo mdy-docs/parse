@@ -115,7 +115,13 @@ struct mdy_doc {
      * two articles on one page must not both own `#introduction`. */
     const char **heading_ids;
     size_t heading_count, heading_cap;
+
+    /* Warnings, in the order they were raised. */
+    mdy_message *messages;
+    size_t message_count, message_cap;
 };
+
+
 
 /* ---- building ------------------------------------------------------------ */
 
@@ -135,6 +141,8 @@ int mdy_tag_allowed(const char *tag);
 int mdy_tag_stripped(const char *tag);
 int mdy_attr_allowed(const char *tag, const char *name, size_t len);
 int mdy_protocol_allowed(const char *attr, const char *value, size_t len);
+int mdy_protocol_allowed_n(const char *attr, size_t attr_len,
+                           const char *value, size_t len);
 
 /* ---- Unicode (src/unicode.c) --------------------------------------------- */
 
@@ -211,6 +219,15 @@ typedef struct {
      * stripped, because that is the only point it is still known. */
     uint32_t units;
 } mdy_line;
+
+/* Raise a warning against one source line, with the same span a block element
+ * on that line would carry. `fmt` is printf's. */
+void mdy_warn(mdy_doc *doc, const mdy_line *lines, size_t line, const char *rule,
+              const char *fmt, ...);
+
+/* The same with no place — the inline parser has no line to point at, and
+ * neither does the JavaScript when it raises these. */
+void mdy_warn_inline(mdy_doc *doc, const char *rule, const char *fmt, ...);
 
 /* Give a block element its unist position: from the first of its lines to the
  * end of the last. */
