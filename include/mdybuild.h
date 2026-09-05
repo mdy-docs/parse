@@ -36,6 +36,17 @@ void mdy_set_string(mdy_doc *doc, mdy_node *el, const char *name, const char *va
 void mdy_set_number(mdy_doc *doc, mdy_node *el, const char *name, double value);
 void mdy_set_bool(mdy_doc *doc, mdy_node *el, const char *name, int value);
 
+/*
+ * A deep copy of `node` into `into`'s arena, sharing nothing with the
+ * original — structure, properties, text and positions.
+ *
+ * Needed whenever a tree is placed in two documents: nodes are LINKED, not
+ * reference-counted, so appending one moves it and a second placement would
+ * get an empty tree. In JavaScript the same hast node can just be referenced
+ * twice; this is what that costs here.
+ */
+mdy_node *mdy_clone(mdy_doc *into, const mdy_node *node);
+
 /* `className` is the one list-valued property, and it is APPENDED to — an
  * element can pick up classes from more than one rule. */
 void mdy_add_class(mdy_doc *doc, mdy_node *el, const char *class_name);

@@ -107,6 +107,80 @@ void mdy_add_class(mdy_doc *doc, mdy_node *el, const char *class_name) {
     p->list_len++;
 }
 
+/*
+ * A deep copy of `node` into `into`'s arena — structure, properties, text and
+ * positions, sharing nothing with the original.
+ *
+ * A tree that is placed in two documents needs this. Nodes are linked, not
+ * reference-counted: appending one moves it, so a tree spliced a second time
+ * would arrive empty and take its whitespace with it. In JavaScript the same
+ * hast node can simply be referenced twice and serialise the same both times;
+ * this is what that costs in C.
+ */
+mdy_node *mdy_clone(mdy_doc *into, const mdy_node *node) {
+    if (!into || !node) return NULL;
+
+    mdy_node *copy = NULL;
+    if (node->type == MDY_TEXT) {
+        copy = mdy_new_text(into, node->text ? node->text : "",
+                            node->text ? strlen(node->text) : 0);
+    } else if (node->type == MDY_ELEMENT) {
+        copy = mdy_new_element(into, node->tag ? node->tag : "div",
+                               node->tag ? strlen(node->tag) : 3);
+    } else {
+        /* A root, or anything else that carries only children. */
+        copy = mdy_alloc(&into->arena, sizeof *copy);
+        if (!copy) return NULL;
+        memset(copy, 0, sizeof *copy);
+        copy->type = node->type;
+        if (node->text) copy->text = mdy_strdup_n(&into->arena, node->text, strlen(node->text));
+    }
+    if (!copy) return NULL;
+
+    /* Properties in order, since the order is what the emitter writes. */
+    for (const mdy_prop *p = node->props; p; p = p->next) {
+        switch (p->type) {
+        case MDY_PROP_STRING:
+            mdy_set_string(into, copy, p->name, p->as.string ? p->as.string : "",
+                           p->as.string ? strlen(p->as.string) : 0);
+            break;
+        case MDY_PROP_NUMBER:
+            mdy_set_number(into, copy, p->name, p->as.number);
+            break;
+        case MDY_PROP_BOOL:
+            mdy_set_bool(into, copy, p->name, p->as.boolean);
+            break;
+        case MDY_PROP_LIST: {
+            mdy_prop *q = new_prop(into, copy, p->name);
+            if (!q) break;
+            q->type = MDY_PROP_LIST;
+            q->list_len = 0;
+            q->list = NULL;
+            if (p->list_len) {
+                const char **items = mdy_alloc(&into->arena, sizeof(char *) * p->list_len);
+                if (!items) break;
+                for (size_t i = 0; i < p->list_len; i++)
+                    items[i] = mdy_strdup_n(&into->arena, p->list[i], strlen(p->list[i]));
+                q->list = items;
+                q->list_len = p->list_len;
+            }
+            break;
+        }
+        }
+    }
+
+    copy->line = node->line;
+    copy->column = node->column;
+    copy->end_line = node->end_line;
+    copy->end_column = node->end_column;
+
+    for (const mdy_node *c = node->first; c; c = c->next) {
+        mdy_node *child = mdy_clone(into, c);
+        if (child) mdy_append(copy, child);
+    }
+    return copy;
+}
+
 /**
  * Drop whatever classes an element has.
  *
