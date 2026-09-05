@@ -461,6 +461,11 @@ static void scan(Ctx *ctx, const char *text, size_t len) {
                 memcpy(href, prefix, hl);
                 hl += encode_uri_component(p + 1, n - 1, href + hl, sizeof href - hl);
                 mdy_set_string(ctx->doc, a, "href", href, hl);
+                /* Written down as well as written out: a document is asked
+                 * often enough what it refers to that it should not have to
+                 * be read again to answer. */
+                mdy_collect(ctx->doc, p[0] == '#' ? MDY_REF_TAG : MDY_REF_MENTION,
+                            p + 1, n - 1);
                 mdy_append(a, mdy_new_text(ctx->doc, p, n));
                 mdy_append(ctx->parent, a);
                 ctx->at_boundary = 0;
@@ -703,6 +708,7 @@ static size_t wiki_link(Ctx *ctx, const char *p, size_t left) {
         if (link_kind_page(target, target_len) && target_len < sizeof tidy) {
             size_t n = normalize_link(target, target_len, tidy, sizeof tidy);
             mdy_set_string(ctx->doc, a, "href", tidy, n);
+            mdy_collect(ctx->doc, MDY_REF_LINK, tidy, n);
         } else {
             mdy_set_string(ctx->doc, a, "href", target, target_len);
         }

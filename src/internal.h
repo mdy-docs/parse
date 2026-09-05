@@ -119,7 +119,20 @@ struct mdy_doc {
     /* Warnings, in the order they were raised. */
     mdy_message *messages;
     size_t message_count, message_cap;
+
+    /* One per document, in order — see mdy_frontmatter. */
+    mdy_frontmatter *matter;
+    size_t matter_count, matter_cap;
+
+    /* Written down while the tree is built — see mdy_reference. */
+    mdy_reference *refs;
+    size_t ref_count, ref_cap;
+    uint32_t ref_document;   /* which document the parser is inside */
 };
+
+/* Note a `#tag`, an `@mention` or a link to a page of ours. Names go in as
+ * written, in order, and only once each. */
+void mdy_collect(mdy_doc *doc, mdy_ref_kind kind, const char *name, size_t len);
 
 
 

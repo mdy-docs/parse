@@ -23,6 +23,7 @@ void mdy_options_default(mdy_options *out) {
     out->documents = 0;
     out->document_wrapper = NULL;   /* NULL means `article` */
     out->frontmatter = 1;
+    out->frontmatter_fence = NULL;  /* NULL means `+++` */
     out->autolink = 1;
     out->emphasis = 1;
     out->max_heading = 6;
@@ -147,6 +148,65 @@ void mdy_warn_inline(mdy_doc *doc, const char *rule, const char *fmt, ...) {
     m->reason = mdy_strdup_n(&doc->arena, buf, strlen(buf));
     m->rule = rule;
     m->line = m->column = m->end_line = m->end_column = 0;
+}
+
+/* Note one document's front matter — or, with a NULL source, that it had
+ * none, so the entries line up with the documents one for one. */
+static void record_matter(mdy_doc *doc, const char *source, size_t len,
+                          uint32_t open_line, uint32_t close_line) {
+    if (doc->matter_count == doc->matter_cap) {
+        size_t want = doc->matter_cap ? doc->matter_cap * 2 : 4;
+        mdy_frontmatter *grown = mdy_alloc(&doc->arena, sizeof *grown * want);
+        if (!grown) return;
+        for (size_t i = 0; i < doc->matter_count; i++) grown[i] = doc->matter[i];
+        doc->matter = grown;
+        doc->matter_cap = want;
+    }
+    mdy_frontmatter *m = &doc->matter[doc->matter_count++];
+    m->source = source;
+    m->source_len = len;
+    m->open_line = open_line;
+    m->close_line = close_line;
+}
+
+void mdy_collect(mdy_doc *doc, mdy_ref_kind kind, const char *name, size_t len) {
+    /* Only once each, per document — `!list.includes(name)`. */
+    for (size_t i = 0; i < doc->ref_count; i++) {
+        const mdy_reference *r = &doc->refs[i];
+        if (r->document == doc->ref_document && r->kind == kind &&
+            r->name_len == len && memcmp(r->name, name, len) == 0) return;
+    }
+    if (doc->ref_count == doc->ref_cap) {
+        size_t want = doc->ref_cap ? doc->ref_cap * 2 : 16;
+        mdy_reference *grown = mdy_alloc(&doc->arena, sizeof *grown * want);
+        if (!grown) return;
+        for (size_t i = 0; i < doc->ref_count; i++) grown[i] = doc->refs[i];
+        doc->refs = grown;
+        doc->ref_cap = want;
+    }
+    mdy_reference *r = &doc->refs[doc->ref_count++];
+    r->kind = kind;
+    r->name = mdy_strdup_n(&doc->arena, name, len);
+    r->name_len = len;
+    r->document = doc->ref_document;
+}
+
+size_t mdy_reference_count(const mdy_doc *doc) {
+    return doc ? doc->ref_count : 0;
+}
+
+const mdy_reference *mdy_reference_at(const mdy_doc *doc, size_t i) {
+    if (!doc || i >= doc->ref_count) return NULL;
+    return &doc->refs[i];
+}
+
+size_t mdy_frontmatter_count(const mdy_doc *doc) {
+    return doc ? doc->matter_count : 0;
+}
+
+const mdy_frontmatter *mdy_frontmatter_at(const mdy_doc *doc, size_t i) {
+    if (!doc || i >= doc->matter_count) return NULL;
+    return &doc->matter[i];
 }
 
 size_t mdy_message_count(const mdy_doc *doc) {
@@ -1638,16 +1698,58 @@ static void collect_definitions(mdy_doc *doc, mdy_line *lines, size_t count) {
 
 /* ---- front matter and documents ------------------------------------------ */
 
-/** How many lines the leading `+++` fence occupies, or 0 if there is none.
- * The YAML inside is not parsed here — mdy-docs hands it to a YAML reader —
- * but it must be recognised so it does not become content. */
-static size_t front_matter_lines(const mdy_line *lines, size_t count) {
-    if (count == 0 || lines[0].indent != 0) return 0;
-    if (!(lines[0].len == 3 && memcmp(lines[0].text, "+++", 3) == 0)) return 0;
-    for (size_t i = 1; i < count; i++) {
-        if (lines[i].len == 3 && memcmp(lines[i].text, "+++", 3) == 0) return i + 1;
+/** A line that is exactly the fence, once trailing whitespace is off —
+ * `lines[open].trimEnd() !== settings.fence`. Leading whitespace is not
+ * allowed, so an indented `+++` is content. */
+static int is_fence(const mdy_line *l, const char *fence, size_t fence_len) {
+    if (l->indent != 0 || l->len < fence_len) return 0;
+    if (memcmp(l->text, fence, fence_len) != 0) return 0;
+    for (size_t k = fence_len; k < l->len; k++)
+        if (l->text[k] != ' ' && l->text[k] != '\t') return 0;
+    return 1;
+}
+
+/*
+ * How many lines the leading front matter occupies, or 0 if there is none.
+ *
+ * The block has to open on the document's first line, GIVE OR TAKE BLANK ONES,
+ * and it has to close. An opening fence with no partner is left alone: it is
+ * more likely to be prose than a block somebody forgot to finish, and guessing
+ * would swallow the rest of the document.
+ *
+ * The YAML inside is not parsed here — see mdy_frontmatter — but it is
+ * recorded, so whoever embeds this can hand it to a reader.
+ */
+static size_t front_matter_lines(mdy_doc *doc, const mdy_line *lines, size_t count) {
+    const char *fence = doc->options.frontmatter_fence;
+    if (!fence) fence = "+++";
+    size_t fence_len = strlen(fence);
+
+    size_t open = 0;
+    while (open < count && lines[open].blank) open++;
+    if (open >= count || !is_fence(&lines[open], fence, fence_len)) return 0;
+
+    size_t close = open + 1;
+    while (close < count && !is_fence(&lines[close], fence, fence_len)) close++;
+    if (close >= count) return 0;
+
+    /* The source between the fences, rejoined with the newlines that were
+     * there — the indentation too, because YAML is made of it. */
+    size_t total = 0;
+    for (size_t k = open + 1; k < close; k++) total += lines[k].indent + lines[k].len + 1;
+    char *src = mdy_alloc(&doc->arena, total + 1);
+    size_t o = 0;
+    if (src) {
+        for (size_t k = open + 1; k < close; k++) {
+            if (o) src[o++] = '\n';
+            for (size_t sp = 0; sp < lines[k].indent; sp++) src[o++] = ' ';
+            memcpy(src + o, lines[k].text, lines[k].len);
+            o += lines[k].len;
+        }
+        src[o] = '\0';
     }
-    return 0;
+    record_matter(doc, src, o, lines[open].number, lines[close].number);
+    return close + 1;
 }
 
 mdy_doc *mdy_parse(const char *text, size_t len, const mdy_options *options) {
@@ -1681,10 +1783,20 @@ mdy_doc *mdy_parse(const char *text, size_t len, const mdy_options *options) {
      * then stripComments, then the lines are measured. The code is the one
      * step this parser does not have — see shims/parse.js.
      */
+    /*
+     * Only for a SINGLE document. A stream splits first and each document
+     * takes its own front matter off, which is what fromStream does — running
+     * this at the top as well would eat the first document's block before the
+     * loop could see whose it was.
+     */
     size_t start = 0;
-    if (doc->options.frontmatter) start = front_matter_lines(lines, count);
+    if (doc->options.frontmatter && !doc->options.documents)
+        start = front_matter_lines(doc, lines, count);
 
     if (!doc->options.documents) {
+        /* One entry either way, so a caller can ask this document what its
+         * front matter was and get a straight answer. */
+        if (doc->matter_count == 0) record_matter(doc, NULL, 0, 0, 0);
         size_t body = count - start;
         strip_comments(lines + start, &body);
         collect_definitions(doc, lines + start, body);
@@ -1724,8 +1836,11 @@ mdy_doc *mdy_parse(const char *text, size_t len, const mdy_options *options) {
             if (!lines[k].blank) { any = 1; break; }
         if (!any) continue;
 
+        size_t had = doc->matter_count;
         if (doc->options.frontmatter)
-            section_start += front_matter_lines(lines + section_start, section_end - section_start);
+            section_start += front_matter_lines(doc, lines + section_start,
+                                                section_end - section_start);
+        if (doc->matter_count == had) record_matter(doc, NULL, 0, 0, 0);
 
         /*
          * Footnotes belong to their own document: each collects, numbers and
@@ -1735,6 +1850,7 @@ mdy_doc *mdy_parse(const char *text, size_t len, const mdy_options *options) {
          */
         doc->note_count = 0;
         doc->next_number = 0;
+        doc->ref_document = (uint32_t)index;
         if (index == 0) {
             doc->note_prefix = "user-content-";
         } else {

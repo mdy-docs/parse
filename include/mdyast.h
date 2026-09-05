@@ -123,7 +123,9 @@ typedef struct {
      * different thing from `documents: false` the option.
      */
     const char *document_wrapper;
-    int frontmatter;    /* a `+++` fence at the top is YAML, not content */
+    int frontmatter;    /* a fence at the top is YAML, not content */
+    /* The line that opens and closes it. NULL means the default, `+++`. */
+    const char *frontmatter_fence;
     int autolink;       /* bare URLs in text become links */
     int emphasis;       /* the default inline marker table */
     int max_heading;    /* deeper headings clamp to this; 0 means 6 */
@@ -172,6 +174,45 @@ typedef struct {
 
 size_t mdy_message_count(const mdy_doc *doc);
 const mdy_message *mdy_message_at(const mdy_doc *doc, size_t i);
+
+/*
+ * A document's front matter, as SOURCE.
+ *
+ * The block is found here — where the fence rule lives, next to everything
+ * else that reads lines — and parsed by whoever embeds this, because it is
+ * YAML and a YAML reader is not a thing to write twice. One entry per
+ * document, in order, with `source` NULL when that document had none.
+ */
+typedef struct {
+    const char *source;   /* the text between the fences, NULL when absent */
+    size_t source_len;
+    uint32_t open_line;   /* 1-based, the opening fence */
+    uint32_t close_line;  /* the closing fence */
+} mdy_frontmatter;
+
+size_t mdy_frontmatter_count(const mdy_doc *doc);
+const mdy_frontmatter *mdy_frontmatter_at(const mdy_doc *doc, size_t i);
+
+/*
+ * What a document referred to: its `#tags`, its `@mentions` and the pages it
+ * linked to.
+ *
+ * A document is asked this often enough that it should not have to be read
+ * again to answer, so they are written down while the tree is built. Names go
+ * in as they are WRITTEN, in the order the document reaches them, and only
+ * once each. `document` says which document in a stream reached it.
+ */
+typedef enum { MDY_REF_TAG, MDY_REF_MENTION, MDY_REF_LINK } mdy_ref_kind;
+
+typedef struct {
+    mdy_ref_kind kind;
+    const char *name;
+    size_t name_len;
+    uint32_t document;    /* 0-based index in a stream */
+} mdy_reference;
+
+size_t mdy_reference_count(const mdy_doc *doc);
+const mdy_reference *mdy_reference_at(const mdy_doc *doc, size_t i);
 
 /* The root node of a parsed document. Valid until mdy_free. */
 const mdy_node *mdy_root(const mdy_doc *doc);

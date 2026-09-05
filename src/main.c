@@ -43,6 +43,17 @@ static int emit_file(const char *path, const mdy_options *options, int stats, in
     if (!doc) { fprintf(stderr, "mdyast: parse failed\n"); return 1; }
 
     if (messages) {
+        for (size_t i = 0; i < mdy_frontmatter_count(doc); i++) {
+            const mdy_frontmatter *m = mdy_frontmatter_at(doc, i);
+            if (m->source) printf("frontmatter %u-%u: %s\n", m->open_line, m->close_line, m->source);
+            else printf("frontmatter: (none)\n");
+        }
+        for (size_t i = 0; i < mdy_reference_count(doc); i++) {
+            const mdy_reference *r = mdy_reference_at(doc, i);
+            static const char *const KIND[] = { "tag", "mention", "link" };
+            printf("ref[%u] %s %.*s\n", r->document, KIND[r->kind],
+                   (int)r->name_len, r->name);
+        }
         /* `<line>:<col>-<line>:<col>: <reason>`, the shape a vfile message
          * prints in — and just the reason when there is no place, which is
          * how the inline warnings are raised. */

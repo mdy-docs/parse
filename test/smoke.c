@@ -56,6 +56,49 @@ static void check_messages(const char *what, const char *source,
     mdy_free(doc);
 }
 
+/* One document's front matter SOURCE, or `(none)`, per document, joined with
+ * `|` — the block is found here and read by whoever embeds this. */
+static void check_matter(const char *what, const char *source,
+                         const char *expected, const mdy_options *o) {
+    mdy_doc *doc = mdy_parse(source, 0, o);
+    char got[1024];
+    size_t n = 0;
+    got[0] = '\0';
+    for (size_t i = 0; i < mdy_frontmatter_count(doc); i++) {
+        const mdy_frontmatter *m = mdy_frontmatter_at(doc, i);
+        if (n) n += (size_t)snprintf(got + n, sizeof got - n, "|");
+        if (m->source) {
+            n += (size_t)snprintf(got + n, sizeof got - n, "%u-%u:%.*s",
+                                  m->open_line, m->close_line, (int)m->source_len, m->source);
+        } else {
+            n += (size_t)snprintf(got + n, sizeof got - n, "(none)");
+        }
+    }
+    int ok = strcmp(got, expected) == 0;
+    printf("  %s  %s\n", ok ? "ok  " : "FAIL", what);
+    if (!ok) { printf("      expected %s\n      actual   %s\n", expected, got); failures++; }
+    mdy_free(doc);
+}
+
+/* What a document says it refers to, as `kind:name` per entry. */
+static void check_refs(const char *what, const char *source,
+                       const char *expected, const mdy_options *o) {
+    static const char *const KIND[] = { "tag", "mention", "link" };
+    mdy_doc *doc = mdy_parse(source, 0, o);
+    char got[1024];
+    size_t n = 0;
+    got[0] = '\0';
+    for (size_t i = 0; i < mdy_reference_count(doc); i++) {
+        const mdy_reference *r = mdy_reference_at(doc, i);
+        n += (size_t)snprintf(got + n, sizeof got - n, "%s%u:%s:%.*s", n ? "|" : "",
+                              r->document, KIND[r->kind], (int)r->name_len, r->name);
+    }
+    int ok = strcmp(got, expected) == 0;
+    printf("  %s  %s\n", ok ? "ok  " : "FAIL", what);
+    if (!ok) { printf("      expected %s\n      actual   %s\n", expected, got); failures++; }
+    mdy_free(doc);
+}
+
 #define EL(tag, props, kids) "{\"type\":\"element\",\"tagName\":\"" tag "\",\"properties\":{" props "},\"children\":[" kids "]}"
 #define TX(v) "{\"type\":\"text\",\"value\":\"" v "\"}"
 #define ROOT(kids) "{\"type\":\"root\",\"children\":[" kids "]}"
@@ -439,6 +482,51 @@ int main(void) {
           ROOT(EL("pre", "", EL("code", "\"className\":[\"language-js\"]", TX("x\\n")))), &o);
     check("a fence interrupts a paragraph", "text\n```\ncode\n```",
           ROOT(EL("p", "", TX("text")) "," EL("pre", "", EL("code", "", TX("code\\n")))), &o);
+
+    printf("--- mdyast: front matter and references ---\n");
+    /*
+     * The block is FOUND here, where the fence rule belongs, and read by
+     * whoever embeds this — it is YAML, and a YAML reader is not a thing to
+     * write twice.
+     */
+    check_matter("the source between the fences comes back",
+                 "+++\ntitle: A\ntags: [x]\n+++\nbody",
+                 "1-4:title: A\ntags: [x]", &o);
+    /* The block has to open on the first line, GIVE OR TAKE BLANK ONES, and
+     * the fence tolerates trailing whitespace. */
+    check_matter("blank lines above the fence are allowed",
+                 "\n\n+++\na: 1\n+++  \nbody", "3-5:a: 1", &o);
+    /* An opening fence with no partner is left alone: more likely prose than
+     * a block somebody forgot to finish. */
+    check_matter("an unclosed fence is not front matter", "+++\na: 1\nbody",
+                 "(none)", &o);
+    check_matter("a document with none says so", "body", "(none)", &o);
+    {
+        mdy_options fence = o;
+        fence.documents = 1;
+        check_matter("each document in a stream has its own",
+                     "+++\na: 1\n+++\none\n---\ntwo\n---\n+++\nb: 2\n+++\nthree",
+                     "1-3:a: 1|(none)|8-10:b: 2", &fence);
+    }
+    {
+        mdy_options alt = o;
+        alt.frontmatter_fence = "---yaml";
+        check_matter("the fence is an option", "---yaml\na: 1\n---yaml\nbody",
+                     "1-3:a: 1", &alt);
+    }
+
+    /* Names go in as WRITTEN, in the order the document reaches them, and only
+     * once each — a document is asked what it refers to often enough that it
+     * should not have to be read again to answer. */
+    check_refs("tags, mentions and page links are written down",
+               "#one and @two and [[ x | Some Page ]] and #one again",
+               "0:tag:one|0:mention:two|0:link:some-page", &o);
+    {
+        mdy_options st = o;
+        st.documents = 1;
+        check_refs("…and each document keeps its own", "#a\n---\n#b",
+                   "0:tag:a|1:tag:b", &st);
+    }
 
     printf("--- mdyast: messages ---\n");
     /*
