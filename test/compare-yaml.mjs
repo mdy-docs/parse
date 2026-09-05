@@ -35,11 +35,18 @@ if (!mdyDocs || roots.length === 0) {
 
 const { parse } = await import(join(mdyDocs, 'node_modules/yaml/dist/index.js'));
 
+/*
+ * Build output is not input. A `.dSYM` bundle holds relocation `.yml` files
+ * that are genuinely multi-document YAML, and pointing this at a tree
+ * containing one measures a compiler's debug symbols rather than a site's
+ * data — which is what the first version of this did.
+ */
+const SKIP = new Set(['node_modules', '.git', 'build', 'dist', 'target']);
 const files = [];
 const walk = (d) => {
   for (const e of readdirSync(d, { withFileTypes: true })) {
     const p = join(d, e.name);
-    if (e.isDirectory()) { if (e.name !== 'node_modules' && e.name !== '.git') walk(p); }
+    if (e.isDirectory()) { if (!SKIP.has(e.name) && !e.name.endsWith('.dSYM')) walk(p); }
     else if (/\.(mdy|ya?ml)$/.test(e.name)) files.push(p);
   }
 };

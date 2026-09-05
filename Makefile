@@ -25,6 +25,7 @@ CORPUS   ?= $(HOME)/projects/mdy-wikipedia-web/site/corpus
 # raw-text elements only appear there, and a doctype under sanitizing was
 # wrong here for exactly as long as nothing pointed a check at one.
 SITE     ?= $(HOME)/projects/mdy-wikipedia-web/site
+THEME    ?= $(HOME)/projects/mdy-wikipedia-web/style-antiquity
 
 all: build/mdyast
 
@@ -83,7 +84,7 @@ build/yamlcat: test/yamlcat.c build/libmdyast.a
 # holds, read here and by the `yaml` package, compared as JSON.
 .PHONY: check-yaml
 check-yaml: build/yamlcat
-	@node test/compare-yaml.mjs --mdy-docs "$(MDY_DOCS)" --corpus "$(SITE)" --corpus "$(SITE)/.."
+	@node test/compare-yaml.mjs --mdy-docs "$(MDY_DOCS)" --corpus "$(SITE)" --corpus "$(THEME)"
 
 # The script layer, on documents, with no engine anywhere.
 build/script: test/script.c build/libmdyast.a
