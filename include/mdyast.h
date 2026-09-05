@@ -115,7 +115,14 @@ typedef struct mdy_node {
  * comparison harness rather than written by hand.
  */
 typedef struct {
-    int documents;      /* a line of exactly `---` starts a new <article> */
+    int documents;      /* a line of exactly `---` starts a new document */
+    /*
+     * What each document is wrapped in. NULL means the default, `article`; an
+     * EMPTY string means no wrapper at all, and the documents run together —
+     * `documents: false` in the JavaScript's stream settings, which is a
+     * different thing from `documents: false` the option.
+     */
+    const char *document_wrapper;
     int frontmatter;    /* a `+++` fence at the top is YAML, not content */
     int autolink;       /* bare URLs in text become links */
     int emphasis;       /* the default inline marker table */

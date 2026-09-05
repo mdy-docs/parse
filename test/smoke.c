@@ -412,6 +412,41 @@ int main(void) {
     check("a fence interrupts a paragraph", "text\n```\ncode\n```",
           ROOT(EL("p", "", TX("text")) "," EL("pre", "", EL("code", "", TX("code\\n")))), &o);
 
+    printf("--- mdyast: the sanitize schema ---\n");
+    /* Two rules, not one. A tag in `strip` disappears with its content; a tag
+     * merely absent from the allowed list becomes a <div> and KEEPS it. */
+    check("an unknown element becomes a div and keeps its content",
+          "<marquee>\n  content survives",
+          ROOT(EL("div", "", TX("\\n") "," EL("p", "", TX("content survives")) "," TX("\\n"))), &o);
+    check("a stripped element takes its content with it", "<script>\n  alert(1)",
+          ROOT(""), &o);
+    check("a javascript: URL is not a protocol the schema allows",
+          "<a href=\"javascript:alert(1)\">x",
+          ROOT(EL("a", "", TX("x"))), &o);
+    check("…and an attribute the tag does allow survives",
+          "<time datetime=\"2026-08-18\">x",
+          ROOT(EL("time", "\"dateTime\":\"2026-08-18\"", TX("x"))), &o);
+
+    printf("--- mdyast: void and blank-line elements ---\n");
+    /* A void element holds nothing, so what is written under it is not its
+     * content — the lines stay where they are. */
+    check("a void element takes no content", "<hr>\n  ignored",
+          ROOT(EL("hr", "", "") "," EL("div", "", TX("\\n") "," EL("p", "", TX("ignored")) "," TX("\\n"))), &o);
+    /* A blank line has an indent of zero, and seeding the children's column
+     * from it wrapped every such element's content in a spurious <div>. */
+    check("a blank line does not close an element, or nest one",
+          "<aside>\n\n  inside\n\nafter",
+          ROOT(EL("aside", "", TX("\\n") "," EL("p", "", TX("inside")) "," TX("\\n")) ","
+               EL("p", "", TX("after"))), &o);
+
+    printf("--- mdyast: thematic breaks ---\n");
+    /* `^([-*_])(?:[ \\t]*\\1){2,}[ \\t]*$` — three or more of one character,
+     * with whitespace allowed between them. */
+    check("spaces between the characters are allowed", "- - -",
+          ROOT(EL("hr", "", "")), &o);
+    check("…and more of them", "*  *  *",
+          ROOT(EL("hr", "", "")), &o);
+
     printf("--- mdyast: hast property names ---\n");
     /*
      * `property-information`'s `find(html, name)`, which is what mdy-docs

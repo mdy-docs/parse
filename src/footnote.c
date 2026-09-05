@@ -27,10 +27,11 @@ int mdy_footnote_reference(mdy_doc *doc, mdy_footnote *note) {
 }
 
 /** `prefix` + id, and `-n` when n > 1 — the id scheme above. */
-static const char *ref_id(mdy_doc *doc, const char *prefix, const char *id, int n) {
+static const char *ref_id(mdy_doc *doc, const char *kind, const char *id, int n) {
+    const char *prefix = doc->note_prefix ? doc->note_prefix : "user-content-";
     char buf[256];
-    if (n > 1) snprintf(buf, sizeof buf, "%s%s-%d", prefix, id, n);
-    else snprintf(buf, sizeof buf, "%s%s", prefix, id);
+    if (n > 1) snprintf(buf, sizeof buf, "%s%s%s-%d", prefix, kind, id, n);
+    else snprintf(buf, sizeof buf, "%s%s%s", prefix, kind, id);
     return mdy_strdup_n(&doc->arena, buf, strlen(buf));
 }
 
@@ -63,8 +64,8 @@ void mdy_footnote_section(mdy_doc *doc, mdy_node *parent) {
         if (!note) continue;
 
         mdy_node *li = mdy_new_element(doc, "li", 2);
-        mdy_set_string(doc, li, "id", ref_id(doc, "user-content-fn-", note->id, 1),
-                       strlen(ref_id(doc, "user-content-fn-", note->id, 1)));
+        mdy_set_string(doc, li, "id", ref_id(doc, "fn-", note->id, 1),
+                       strlen(ref_id(doc, "fn-", note->id, 1)));
         mdy_append(li, mdy_new_text(doc, "\n", 1));
 
         mdy_node *p = mdy_new_element(doc, "p", 1);
@@ -79,7 +80,7 @@ void mdy_footnote_section(mdy_doc *doc, mdy_node *parent) {
             mdy_append(p, mdy_new_text(doc, " ", 1));
             mdy_node *back = mdy_new_element(doc, "a", 1);
             char href[256];
-            snprintf(href, sizeof href, "#%s", ref_id(doc, "user-content-fnref-", note->id, n));
+            snprintf(href, sizeof href, "#%s", ref_id(doc, "fnref-", note->id, n));
             mdy_set_string(doc, back, "href", href, strlen(href));
             mdy_set_bool(doc, back, "dataFootnoteBackref", 1);
             mdy_set_string(doc, back, "ariaLabel", "Back to content", 15);

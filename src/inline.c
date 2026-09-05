@@ -203,8 +203,18 @@ static void scan(Ctx *ctx, const char *text, size_t len) {
             size_t close = len;
             int found = 0;
             for (size_t j = i + 2; j + 1 < len; j++) {
-                if (text[j] == '\\') { j++; continue; }
-                if (inside_url(ctx, j)) continue;
+                /*
+                 * Neither escapes nor URL spans apply INSIDE a raw span —
+                 * `if (character === '\\\\' && !raw …)` and
+                 * `if (!raw && links[link]…)`. A backslash before the closing
+                 * run does not hide it, which is what makes
+                 * ``` ``!!not bold// \\`` ``` a code span holding a
+                 * backslash rather than one that never closes.
+                 */
+                if (!m->raw) {
+                    if (text[j] == '\\') { j++; continue; }
+                    if (inside_url(ctx, j)) continue;
+                }
                 if (text[j] == m->seq[0] && text[j + 1] == m->seq[1]) { close = j; found = 1; break; }
             }
             {
@@ -497,10 +507,11 @@ static size_t wiki_link(Ctx *ctx, const char *p, size_t left) {
         mdy_node *sup = mdy_new_element(ctx->doc, "sup", 3);
         mdy_node *a = mdy_new_element(ctx->doc, "a", 1);
 
-        snprintf(buf, sizeof buf, "#user-content-fn-%s", note->id);
+        const char *pre = ctx->doc->note_prefix ? ctx->doc->note_prefix : "user-content-";
+        snprintf(buf, sizeof buf, "#%sfn-%s", pre, note->id);
         mdy_set_string(ctx->doc, a, "href", buf, strlen(buf));
-        if (n > 1) snprintf(buf, sizeof buf, "user-content-fnref-%s-%d", note->id, n);
-        else snprintf(buf, sizeof buf, "user-content-fnref-%s", note->id);
+        if (n > 1) snprintf(buf, sizeof buf, "%sfnref-%s-%d", pre, note->id, n);
+        else snprintf(buf, sizeof buf, "%sfnref-%s", pre, note->id);
         mdy_set_string(ctx->doc, a, "id", buf, strlen(buf));
         mdy_set_bool(ctx->doc, a, "dataFootnoteRef", 1);
         mdy_set_string(ctx->doc, a, "ariaDescribedBy", "footnote-label", 14);

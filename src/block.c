@@ -20,6 +20,7 @@ static void trim(const char **s, size_t *len);
 
 void mdy_options_default(mdy_options *out) {
     out->documents = 0;
+    out->document_wrapper = NULL;   /* NULL means `article` */
     out->frontmatter = 1;
     out->autolink = 1;
     out->emphasis = 1;
@@ -85,6 +86,26 @@ static int all_of(const mdy_line *l, char c) {
     if (l->len == 0) return 0;
     for (size_t i = 0; i < l->len; i++) if (l->text[i] != c) return 0;
     return 1;
+}
+
+/*
+ * `/^([-*_])(?:[ \t]*\1){2,}[ \t]*$/` — a thematic break.
+ *
+ * Three or more of ONE character, with whitespace allowed between them and
+ * after them. `- - -` and `*  *  *` are breaks; a run of the character with
+ * nothing between it is only the commonest way to write one.
+ */
+static int thematic_break(const mdy_line *l) {
+    if (l->len == 0) return 0;
+    char c = l->text[0];
+    if (c != '-' && c != '*' && c != '_') return 0;
+    size_t seen = 0;
+    for (size_t i = 0; i < l->len; i++) {
+        if (l->text[i] == c) { seen++; continue; }
+        if (l->text[i] == ' ' || l->text[i] == '\t') continue;
+        return 0;
+    }
+    return seen >= 3;
 }
 
 static size_t run_of(const mdy_line *l, char c) {
@@ -390,6 +411,27 @@ static int starts_ci(const mdy_line *l, size_t at, const char *want) {
 }
 
 /*
+ * The disabled checkbox at the head of a task item, and the space that
+ * separates it from the text.
+ *
+ * The space goes in only when there IS text — `content.unshift({text: ' '})`
+ * runs under `if (content.length)` — so an empty task ends at its box. The
+ * box carries a position because the JavaScript builds it with the block
+ * element helper, which gives every node one.
+ */
+static void add_task_box(mdy_doc *doc, mdy_node *into, int task, size_t content_len,
+                         const mdy_line *lines, size_t line) {
+    if (task < 0) return;
+    mdy_node *box = mdy_new_element(doc, "input", 5);
+    mdy_set_string(doc, box, "type", "checkbox", 8);
+    mdy_set_bool(doc, box, "checked", task);
+    mdy_set_bool(doc, box, "disabled", 1);
+    mdy_set_position(box, lines, line, line);
+    mdy_append(into, box);
+    if (content_len) mdy_append(into, mdy_new_text(doc, " ", 1));
+}
+
+/*
  * A fence opener, as src/parse/fence.js reads one: three or more backticks or
  * tildes, then whatever is written after them.
  *
@@ -505,6 +547,29 @@ static void strip_comments(mdy_line *lines, size_t *count) {
     *count = o;
 }
 
+/* `/^---[ \t]*$/` — a document separator. Exactly three dashes; four is a
+ * Setext underline and `- - -` is a thematic break, and both keep their
+ * meaning. */
+static int is_separator(const mdy_line *l) {
+    if (l->indent != 0 || l->len < 3) return 0;
+    if (l->text[0] != '-' || l->text[1] != '-' || l->text[2] != '-') return 0;
+    for (size_t k = 3; k < l->len; k++)
+        if (l->text[k] != ' ' && l->text[k] != '\t') return 0;
+    return 1;
+}
+
+/* html-void-elements: the elements that hold nothing. */
+static int is_void_element(const char *tag) {
+    static const char *const VOID[] = {
+        "area", "base", "basefont", "bgsound", "br", "col", "command", "embed",
+        "frame", "hr", "image", "img", "input", "keygen", "link", "meta",
+        "param", "source", "track", "wbr",
+    };
+    for (size_t i = 0; i < sizeof VOID / sizeof VOID[0]; i++)
+        if (strcmp(VOID[i], tag) == 0) return 1;
+    return 0;
+}
+
 /* The five elements whose content is text and nothing else — html.js's
  * `rawText` set, and the same names the HTML parser treats as RCDATA. */
 static int is_raw_text(const char *tag) {
@@ -562,17 +627,43 @@ static size_t parse_element(mdy_doc *doc, mdy_node *parent,
     }
     tag[tag_len] = '\0';
 
-    /* An element the schema does not allow produces nothing, and its children
-     * go with it — which is what `sanitize` does. */
-    if (doc->options.sanitize && !mdy_tag_allowed(tag))
-        return child_lines(lines, count, i, l->indent);
+    /*
+     * Two different rules, and collapsing them into one loses an author's
+     * text. A tag in the STRIP list disappears with everything under it —
+     * `<script>` may not survive in any form. A tag merely absent from the
+     * allowed list becomes a <div> and KEEPS its content, because a typo in a
+     * tag name should not silently delete a section.
+     *
+     * The attributes are still judged by the name the author WROTE: the
+     * schema's per-tag rules are keyed on `opener.tagName`, not on the `div`
+     * it may have just become.
+     */
+    const char *schema_tag = tag;      /* the name the author wrote */
+    const char *build = tag;           /* the name to build */
+    if (doc->options.sanitize) {
+        if (mdy_tag_stripped(tag)) return child_lines(lines, count, i, l->indent);
+        if (!mdy_tag_allowed(tag)) { build = "div"; tag_len = 3; }
+    }
 
-    mdy_node *el = mdy_new_element(doc, tag, tag_len);
+    mdy_node *el = mdy_new_element(doc, build, tag_len);
     const char *content = NULL;
     size_t content_len = 0;
-    parse_attributes(doc, el, tag, l->text + n, l->len - n, &content, &content_len);
+    parse_attributes(doc, el, schema_tag, l->text + n, l->len - n, &content, &content_len);
 
     size_t end = child_lines(lines, count, i, l->indent);
+
+    /*
+     * A VOID element holds nothing, so anything written under it is not its
+     * content — the lines stay where they are and the block loop makes of
+     * them whatever it would have anyway (a <div>, when they are indented).
+     */
+    if (is_void_element(build)) {
+        if (content) { trim(&content, &content_len); }
+        mdy_set_position(el, lines, i, i);
+        separate(doc, parent);
+        mdy_append(parent, el);
+        return i + 1;
+    }
 
     /*
      * Elements whose content is TEXT and nothing else: pre, script, style,
@@ -585,7 +676,7 @@ static size_t parse_element(mdy_doc *doc, mdy_node *parent,
      * empty line: the JavaScript joins with `filter(Boolean)`, which drops it
      * along with an empty opener.
      */
-    if (is_raw_text(tag)) {
+    if (is_raw_text(build)) {
         size_t strip = l->indent + 2;
         size_t need = 0;
         if (content) { trim(&content, &content_len); need += content_len + 1; }
@@ -636,10 +727,20 @@ static size_t parse_element(mdy_doc *doc, mdy_node *parent,
     }
     mdy_set_position(el, lines, i, end > i + 1 ? end - 1 : i);
     if (end > i + 1) {
-        /* The children's own column, so one of them being deeper than the
-         * others is what makes a div rather than all of them. */
-        size_t inner = lines[i + 1].indent;
-        for (size_t k = i + 1; k < end; k++) if (!lines[k].blank && lines[k].indent < inner) inner = lines[k].indent;
+        /*
+         * The children's own column, so one of them being deeper than the
+         * others is what makes a div rather than all of them.
+         *
+         * Seeded from the first NON-BLANK child. A blank line has an indent
+         * of zero, and starting from it made every element with a blank line
+         * under it wrap its content in a spurious <div>.
+         */
+        size_t inner = 0;
+        int seen = 0;
+        for (size_t k = i + 1; k < end; k++) {
+            if (lines[k].blank) continue;
+            if (!seen || lines[k].indent < inner) { inner = lines[k].indent; seen = 1; }
+        }
         mdy_parse_block(doc, el, lines + i + 1, end - (i + 1), inner);
     }
     separate(doc, parent);
@@ -731,6 +832,25 @@ static void add_cell(mdy_doc *doc, mdy_node *row, const char *tag, size_t tag_le
                           : "text-align: center";
         mdy_set_string(doc, cell, "style", style, strlen(style));
     }
+    /*
+     * `\\|` becomes `|` now that splitting is done, and every other escape is
+     * left to the inline parser. It has to happen HERE rather than there: a
+     * code span is raw, so the inline parser would never look inside one, and
+     * `| ``a \\| b`` |` is a cell holding `a | b`.
+     */
+    if (memchr(text, '\\', len)) {
+        char *out = mdy_alloc(&doc->arena, len + 1);
+        if (out) {
+            size_t o = 0;
+            for (size_t k = 0; k < len; k++) {
+                if (text[k] == '\\' && k + 1 < len && text[k + 1] == '|') continue;
+                out[o++] = text[k];
+            }
+            out[o] = '\0';
+            text = out;
+            len = o;
+        }
+    }
     mdy_parse_inline(doc, cell, text, len);
     mdy_set_position(cell, lines, row_line, row_line);
     mdy_append(row, mdy_new_text(doc, "\n", 1));
@@ -766,8 +886,12 @@ static size_t parse_table(mdy_doc *doc, mdy_node *parent, const mdy_line *lines,
         for (size_t r = i + 2; r < i + rows; r++) {
             size_t n = split_cells(&lines[r], starts, lens, 64);
             mdy_node *tr = mdy_new_element(doc, "tr", 2);
-            for (size_t c = 0; c < n && c < columns; c++)
-                add_cell(doc, tr, "td", 2, starts[c], lens[c], align[c], lines, r);
+            /* Every row is the header's width: a short one is PADDED with
+             * empty cells and a long one loses the extra. A row that is
+             * still a row, however short, keeps the table rectangular. */
+            for (size_t c = 0; c < columns; c++)
+                add_cell(doc, tr, "td", 2, c < n ? starts[c] : NULL, c < n ? lens[c] : 0,
+                         align[c], lines, r);
             mdy_append(tr, mdy_new_text(doc, "\n", 1));
             mdy_set_position(tr, lines, r, r);
             mdy_append(tbody, tr);
@@ -860,7 +984,7 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
         }
 
         /* --- thematic break: three or more of - * _ alone --- */
-        if ((all_of(l, '-') || all_of(l, '*') || all_of(l, '_')) && l->len >= 3) {
+        if (thematic_break(l)) {
             separate(doc, parent);
             mdy_node *rule = mdy_new_element(doc, "hr", 2);
             mdy_set_position(rule, lines, i, i);
@@ -978,10 +1102,10 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
              * `<ol start="1931">`, which is what makes the rendered numbering
              * match what the author wrote. One is the default and is left off.
              */
-            if (ordered) {
-                long first = marker_number(l);
-                if (first >= 0 && first != 1) mdy_set_number(doc, list, "start", (double)first);
-            }
+            /* Read now, SET after the items: properties is an object and
+             * the JavaScript puts className on before start, so the order the
+             * two are written in is part of the output. */
+            long first = ordered ? marker_number(l) : -1;
             mdy_append(list, mdy_new_text(doc, "\n", 1));
             int any_task = 0;
 
@@ -1054,7 +1178,7 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
                     int k_ordered = 0;
                     if (list_marker(k, &k_ordered)) break;
                     if (k->text[0] == '<' || k->text[0] == '=') break;
-                    if ((all_of(k, '-') || all_of(k, '*') || all_of(k, '_')) && k->len >= 3) break;
+                    if (thematic_break(k)) break;
                     item_end++;
                 }
                 while (item_end > i + 1 && lines[item_end - 1].blank) item_end--;
@@ -1065,23 +1189,26 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
 
                 mdy_node *item = mdy_new_element(doc, "li", 2);
 
-                /* `[ ]` or `[x]` after the marker makes it a task. */
+                /*
+                 * `[ ]` or `[x]` after the marker makes it a task —
+                 * `^\\[([ xX])\\](?:[ \\t]+(.*))?$`, so the box has to be
+                 * followed by whitespace or by nothing at all. `- [x]done` is
+                 * an ordinary item reading `[x]done`.
+                 *
+                 * The box itself is NOT appended here: it belongs at the head
+                 * of whatever holds the content, which for a loose item is the
+                 * paragraph and not the <li>.
+                 */
                 int task = -1;
                 if (body_len >= 3 && body[0] == '[' && body[2] == ']' &&
-                    (body[1] == ' ' || body[1] == 'x' || body[1] == 'X')) {
+                    (body[1] == ' ' || body[1] == 'x' || body[1] == 'X') &&
+                    (body_len == 3 || body[3] == ' ' || body[3] == '\t')) {
                     task = body[1] == ' ' ? 0 : 1;
                     body += 3;
                     body_len -= 3;
-                    while (body_len && *body == ' ') { body++; body_len--; }
+                    while (body_len && (*body == ' ' || *body == '\t')) { body++; body_len--; }
                     any_task = 1;
                     mdy_add_class(doc, item, "task-list-item");
-
-                    mdy_node *box = mdy_new_element(doc, "input", 5);
-                    mdy_set_string(doc, box, "type", "checkbox", 8);
-                    mdy_set_bool(doc, box, "checked", task);
-                    mdy_set_bool(doc, box, "disabled", 1);
-                    mdy_append(item, box);
-                    mdy_append(item, mdy_new_text(doc, " ", 1));
                 }
 
                 /*
@@ -1117,6 +1244,7 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
                     /* `li("\n" p(content) "\n")` — the shape a blank line
                      * between items produces. */
                     mdy_node *wrap = mdy_new_element(doc, "p", 1);
+                    add_task_box(doc, wrap, task, o, lines, i);
                     mdy_parse_inline(doc, wrap, joined, o);
                     /* The paragraph a loose item wraps its content in spans
                      * the same lines the item does — it IS the item's
@@ -1126,6 +1254,7 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
                     mdy_append(item, wrap);
                     mdy_append(item, mdy_new_text(doc, "\n", 1));
                 } else {
+                    add_task_box(doc, item, task, o, lines, i);
                     mdy_parse_inline(doc, item, joined, o);
                 }
 
@@ -1145,6 +1274,8 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
             /* The list is marked once, after its items, because one task item
              * makes the whole list a task list. */
             if (any_task) mdy_add_class(doc, list, "contains-task-list");
+            if (ordered && first >= 0 && first != 1)
+                mdy_set_number(doc, list, "start", (double)first);
             mdy_set_position(list, lines, start_line, i > start_line ? i - 1 : start_line);
             separate(doc, parent);
             mdy_append(parent, list);
@@ -1166,9 +1297,13 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
             const char *fl = NULL;
             size_t fll = 0;
             if (j > i && fence_opener(&lines[j], &fence_here, &fl, &fll)) break;
+            /* …and so does a table: a header row and its delimiter under a
+             * line of prose start the table, they do not join the sentence. */
+            if (j > i && memchr(lines[j].text, '|', lines[j].len) && j + 1 < count &&
+                table_rows(lines, count, j)) break;
             if (j > i && (lines[j].text[0] == '=' || lines[j].text[0] == '<' ||
                           list_marker(&lines[j], &ordered_here) ||
-                          ((all_of(&lines[j], '-') || all_of(&lines[j], '*') || all_of(&lines[j], '_')) && lines[j].len >= 3))) break;
+                          thematic_break(&lines[j]))) break;
             total += lines[j].len + 1;
             j++;
         }
@@ -1406,34 +1541,75 @@ mdy_doc *mdy_parse(const char *text, size_t len, const mdy_options *options) {
         return doc;
     }
 
-    /* Each `---` at column 0 starts a new document, and each becomes an
-     * <article> of its own — including its own front matter, which is why the
-     * scan below re-runs the check per section rather than only at the top. */
+    /*
+     * `/^---[ \t]*$/` starts the next document — exactly three dashes, as YAML
+     * has it, with trailing whitespace tolerated. More than three stays a
+     * thematic break or a Setext underline, which is the way out of the
+     * collision.
+     *
+     * A leading separator OPENS the first document rather than making an empty
+     * one before it, and a document holding nothing but whitespace is dropped
+     * — both of which fall out of skipping the empty sections, so a stream can
+     * be spaced out however reads best.
+     */
+    const char *wrapper = doc->options.document_wrapper;
+    if (!wrapper) wrapper = "article";
+    size_t wrapper_len = strlen(wrapper);
+
     size_t from = start;
+    int index = 0;
     for (size_t i = start; i <= count; i++) {
-        int boundary = i == count ||
-            (lines[i].indent == 0 && lines[i].len == 3 && memcmp(lines[i].text, "---", 3) == 0);
+        int boundary = i == count || is_separator(&lines[i]);
         if (!boundary) continue;
 
-        mdy_node *article = mdy_new_element(doc, "article", 7);
         size_t section_start = from;
-        if (doc->options.frontmatter) section_start += front_matter_lines(lines + from, i - from);
+        size_t section_end = i;
+        from = i + 1;
 
-        /* Footnotes belong to their own document: each article collects,
-         * numbers and lists its own, so two documents in one file cannot share
-         * an id or a numbering run. */
+        /* Nothing but whitespace is not a document. */
+        int any = 0;
+        for (size_t k = section_start; k < section_end; k++)
+            if (!lines[k].blank) { any = 1; break; }
+        if (!any) continue;
+
+        if (doc->options.frontmatter)
+            section_start += front_matter_lines(lines + section_start, section_end - section_start);
+
+        /*
+         * Footnotes belong to their own document: each collects, numbers and
+         * lists its own. The SECOND and later documents carry their index in
+         * the id prefix, so two documents on one page cannot both own
+         * `#user-content-fn-1`.
+         */
         doc->note_count = 0;
         doc->next_number = 0;
+        if (index == 0) {
+            doc->note_prefix = "user-content-";
+        } else {
+            char pre[64];
+            snprintf(pre, sizeof pre, "user-content-%d-", index);
+            doc->note_prefix = mdy_strdup_n(&doc->arena, pre, strlen(pre));
+        }
+
         /* Per document, and after its own front matter — see the note above.
-         * Compacting inside [section_start, i) leaves the lines beyond `i`
-         * where the scan above still expects them. */
-        size_t body = i - section_start;
+         * Compacting inside the section leaves the lines beyond it where the
+         * scan above still expects them. */
+        size_t body = section_end - section_start;
         strip_comments(lines + section_start, &body);
         collect_definitions(doc, lines + section_start, body);
-        mdy_parse_block(doc, article, lines + section_start, body, 0);
-        mdy_footnote_section(doc, article);
-        mdy_append(doc->root, article);
-        from = i + 1;
+
+        if (wrapper_len == 0) {
+            /* `documents: {wrapper: false}` — they run together, with no
+             * element between them and the root. */
+            mdy_parse_block(doc, doc->root, lines + section_start, body, 0);
+            mdy_footnote_section(doc, doc->root);
+        } else {
+            mdy_node *article = mdy_new_element(doc, wrapper, wrapper_len);
+            mdy_parse_block(doc, article, lines + section_start, body, 0);
+            mdy_footnote_section(doc, article);
+            mdy_append(doc->root, article);
+        }
+        index++;
     }
     return doc;
 }

@@ -103,6 +103,12 @@ struct mdy_doc {
     mdy_footnote *notes;
     size_t note_count, note_cap;
     int next_number;
+    /*
+     * The prefix a footnote's ids are built on. `user-content-` for the first
+     * document, `user-content-<n>-` for the nth in a stream — two documents on
+     * one page must not both own `#user-content-fn-1`.
+     */
+    const char *note_prefix;
 
     /* Every heading id already used, so a repeat gets `-1`, `-2`, … — see the
      * heading rule in block.c. Shared across a stream's documents on purpose:
@@ -126,6 +132,7 @@ void mdy_clear_class(mdy_doc *doc, mdy_node *el);
 
 const char *mdy_hast_name(mdy_doc *doc, const char *name, size_t len);
 int mdy_tag_allowed(const char *tag);
+int mdy_tag_stripped(const char *tag);
 int mdy_attr_allowed(const char *tag, const char *name, size_t len);
 int mdy_protocol_allowed(const char *attr, const char *value, size_t len);
 
