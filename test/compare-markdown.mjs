@@ -58,8 +58,14 @@ function canon(node) {
   if (node.type === 'doctype') return { type: 'doctype' };
   if (node.type === 'raw') return { type: 'raw', value: node.value };
   if (node.type === 'root') return { type: 'root', children: (node.children ?? []).map(canon) };
+  /*
+   * INSERTION ORDER, not sorted. hast keeps properties in the order they were
+   * set and the HTML writer writes them in that order, so sorting one side
+   * and not the other invents differences — which is what the first version
+   * of this did, reporting every task list as wrong when the two agreed.
+   */
   const props = {};
-  for (const key of Object.keys(node.properties ?? {}).sort()) {
+  for (const key of Object.keys(node.properties ?? {})) {
     const v = node.properties[key];
     if (v === undefined || v === null || v === false) continue;
     props[key] = v;

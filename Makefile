@@ -20,9 +20,9 @@ CFLAGS  += -std=c11 -Wall -Wextra -Wshadow -O2 -g -Iinclude -Isrc -Ithird_party/
 # the library yet: the front end that turns its callbacks into a hast tree is
 # the next piece of work, and build/md4cprobe is the check that comes first.
 MD4C_INC := -Ithird_party/md4c/src
-MD4C_SRCS := third_party/md4c/src/md4c.c
+MD4C_SRCS := third_party/md4c/src/md4c.c third_party/md4c/src/entity.c
 
-SRCS := src/arena.c src/ast.c src/attrs.c src/unicode.c src/linkify.c src/emoji.c src/footnote.c src/inline.c src/block.c src/html.c src/script.c src/yaml.c src/data.c
+SRCS := src/arena.c src/ast.c src/attrs.c src/unicode.c src/linkify.c src/emoji.c src/footnote.c src/inline.c src/block.c src/html.c src/script.c src/yaml.c src/data.c src/markdown.c
 OBJS := $(patsubst src/%.c,build/%.o,$(SRCS))
 
 # Where mdy-docs lives, for the comparison harness. Nothing in the library
@@ -37,12 +37,24 @@ THEME    ?= $(HOME)/projects/mdy-wikipedia-web/style-antiquity
 
 all: build/mdyast
 
-build/%.o: src/%.c include/mdyast.h include/mdyhtml.h include/mdyscript.h include/mdyyaml.h include/mdydata.h src/internal.h
+build/markdown.o: src/markdown.c include/mdymarkdown.h src/internal.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(MD4C_INC) -c $< -o $@
+
+build/%.o: src/%.c include/mdyast.h include/mdyhtml.h include/mdyscript.h include/mdyyaml.h include/mdydata.h include/mdymarkdown.h src/internal.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c $< -o $@
 
-build/libmdyast.a: $(OBJS)
-	$(AR) rcs $@ $(OBJS)
+build/md4c.o: third_party/md4c/src/md4c.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(MD4C_INC) -c $< -o $@
+
+build/md4c-entity.o: third_party/md4c/src/entity.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(MD4C_INC) -c $< -o $@
+
+build/libmdyast.a: $(OBJS) build/md4c.o build/md4c-entity.o
+	$(AR) rcs $@ $(OBJS) build/md4c.o build/md4c-entity.o
 
 build/mdyast: src/main.c build/libmdyast.a
 	$(CC) $(CFLAGS) src/main.c build/libmdyast.a -o $@
@@ -67,6 +79,11 @@ build/smoke: test/smoke.c build/libmdyast.a
 build/html: test/html.c build/libmdyast.a
 	@mkdir -p build
 	$(CC) $(CFLAGS) test/html.c build/libmdyast.a -o $@
+
+# Markdown in, the hast tree as JSON out — the other half of check-markdown.
+build/mdcat: test/mdcat.c build/libmdyast.a
+	@mkdir -p build
+	$(CC) $(CFLAGS) test/mdcat.c build/libmdyast.a -o $@
 
 # Does md4c read the borrowed corpus at all? The check before the front end.
 build/md4cprobe: test/md4cprobe.c $(MD4C_SRCS)
@@ -104,8 +121,8 @@ corpus:
 
 # The reference side alone until there is a C front end to point at with
 # --tool: how much of the corpus remark reads, and what it costs.
-check-markdown:
-	@node test/compare-markdown.mjs --mdy-docs "$(MDY_DOCS)" $(if $(TOOL),--tool "$(TOOL)")
+check-markdown: build/mdcat
+	@node test/compare-markdown.mjs --mdy-docs "$(MDY_DOCS)" --tool "$(if $(TOOL),$(TOOL),build/mdcat)"
 
 .PHONY: check-yaml
 check-yaml: build/yamlcat

@@ -144,6 +144,9 @@ size_t mdy_normalize_link(const char *s, size_t len, char *out, size_t cap);
 
 /* ---- building ------------------------------------------------------------ */
 
+/* An empty document — an arena and a root. Both front ends start here. */
+mdy_doc *mdy_doc_new(void);
+
 mdy_node *mdy_new_element(mdy_doc *doc, const char *tag, size_t tag_len);
 mdy_node *mdy_new_text(mdy_doc *doc, const char *text, size_t len);
 void mdy_append(mdy_node *parent, mdy_node *child);

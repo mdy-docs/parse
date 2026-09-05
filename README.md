@@ -319,9 +319,45 @@ build/md4cprobe       md4c reads 1390/1390: 68591 blocks, 42286 spans,
                       483296 text runs, 12.2 MB of text, refusing none
 ```
 
-`make check-markdown TOOL=<binary>` compares trees once there is something to
-compare — trees rather than HTML, because what a `.md` document becomes is a
-tree that composition and `transform` then work on.
+`make check-markdown` compares TREES, not HTML: what a `.md` document becomes
+is a tree that composition and `transform` then work on, and two pipelines
+agreeing on HTML while disagreeing on the tree is a difference nobody sees
+until a transform runs.
+
+### Where the mapping has got to
+
+```
+792/1390 trees identical (57.0%)
+  commonmark   500/652     ext-tables      1/12
+  gfm           19/39      ext-tasklists   2/5
+  real         112/486     ext-footnotes   8/26
+```
+
+`src/markdown.c` turns md4c's callbacks into `mdy_node`s directly — a stack of
+open nodes, no intermediate representation. **Not** into lamassu bytecode: a
+`.md` document has no program (`body: format === 'md' ? null : …` in mdy-docs),
+so there would be nothing to run, and bytecode that rebuilds a constant tree is
+strictly worse than the tree.
+
+Three rules moved that number a long way, and each was found by the harness
+rather than by reading:
+
+- **remark-rehype's `wrap`** is where every `\n` in the tree comes from — one
+  before the first child, between each pair, and after the last for a *loose*
+  parent; between only for the root and a tight `<li>`. Padding after every
+  block instead was wrong on 1,389 of 1,390 documents, all of them a single
+  trailing newline. 0.1% → 43%.
+- **Text is coalesced.** md4c reports a run, an entity, a soft break and
+  another run separately; the reference produces one text node per run of
+  adjacent text.
+- **Entities resolve.** md4c is encoding-agnostic and hands over `&copy;`
+  verbatim; it ships the HTML5 table as `entity.c` for exactly this.
+
+What remains is characterised rather than mysterious. `ext-tables` is
+`rehype-raw`: it round-trips the tree through an HTML5 parser, and HTML5's
+foster-parenting rule hoists a table's whitespace out in front of it. Matching
+that means either an HTML5 parser in C (lexbor) doing the same round trip — the
+writer for it already exists here — or a deliberate divergence.
 
 ## The other direction: hast to HTML
 

@@ -1803,6 +1803,24 @@ static size_t front_matter_lines(mdy_doc *doc, const mdy_line *lines, size_t cou
     return close + 1;
 }
 
+/*
+ * An empty document: an arena and a root, and nothing read yet.
+ *
+ * Both front ends start here — this one and src/markdown.c — because the tree
+ * type is the thing they share and the arena is how it is owned. mdy_free is
+ * the only cleanup either of them needs.
+ */
+mdy_doc *mdy_doc_new(void) {
+    mdy_doc *doc = calloc(1, sizeof *doc);
+    if (!doc) return NULL;
+    mdy_options_default(&doc->options);
+    doc->root = mdy_alloc(&doc->arena, sizeof *doc->root);
+    if (!doc->root) { mdy_free(doc); return NULL; }
+    memset(doc->root, 0, sizeof *doc->root);
+    doc->root->type = MDY_ROOT;
+    return doc;
+}
+
 mdy_doc *mdy_parse(const char *text, size_t len, const mdy_options *options) {
     mdy_doc *doc = calloc(1, sizeof *doc);
     if (!doc) return NULL;
