@@ -41,7 +41,7 @@ build/markdown.o: src/markdown.c include/mdymarkdown.h src/internal.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(MD4C_INC) -c $< -o $@
 
-build/%.o: src/%.c include/mdyast.h include/mdyhtml.h include/mdyscript.h include/mdyyaml.h include/mdydata.h include/mdymarkdown.h include/mdydoc.h src/internal.h
+build/%.o: src/%.c include/mdyast.h include/mdyhtml.h include/mdyscript.h include/mdyyaml.h include/mdydata.h include/mdymarkdown.h include/mdydoc.h include/mdybuild.h src/internal.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c $< -o $@
 

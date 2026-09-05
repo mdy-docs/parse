@@ -144,16 +144,9 @@ size_t mdy_normalize_link(const char *s, size_t len, char *out, size_t cap);
 
 /* ---- building ------------------------------------------------------------ */
 
-/* An empty document — an arena and a root. Both front ends start here. */
-mdy_doc *mdy_doc_new(void);
-
-mdy_node *mdy_new_element(mdy_doc *doc, const char *tag, size_t tag_len);
-mdy_node *mdy_new_text(mdy_doc *doc, const char *text, size_t len);
-void mdy_append(mdy_node *parent, mdy_node *child);
-void mdy_set_string(mdy_doc *doc, mdy_node *el, const char *name, const char *value, size_t value_len);
-void mdy_set_number(mdy_doc *doc, mdy_node *el, const char *name, double value);
-void mdy_set_bool(mdy_doc *doc, mdy_node *el, const char *name, int value);
-void mdy_add_class(mdy_doc *doc, mdy_node *el, const char *class_name);
+/* The tree builders are PUBLIC — anything that takes a tree apart and puts it
+ * back needs them, not only the parser. See include/mdybuild.h. */
+#include "mdybuild.h"
 void mdy_clear_class(mdy_doc *doc, mdy_node *el);
 
 /* ---- attributes and the schema ------------------------------------------- */
