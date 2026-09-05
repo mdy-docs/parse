@@ -273,6 +273,56 @@ it is different behaviour.
 `scriptBrackets` is not ported: it pairs brackets up for an editor to fold and
 highlight, which is tooling rather than compilation.
 
+## Markdown: vendored, and a corpus to check it against
+
+mdy-docs speaks two markup languages. `.md` goes through a second front end —
+`remarkParse → remarkGfm → remarkAlert → remarkRehype → rehypeRaw` — and stops
+at the tree, so a `.md` document arrives as hast exactly as an `.mdy` one
+does.
+
+[md4c](https://github.com/mity/md4c) is vendored at `third_party/md4c` (MIT,
+CommonMark-compliant, callback-based rather than AST-based, which suits
+building a tree directly). `MD_DIALECT_GITHUB` covers permissive autolinks,
+tables, strikethrough, task lists, admonitions and **footnotes**.
+
+**The corpus came first, deliberately.** Every other C stage here is
+trustworthy because it is diffed against the JavaScript over real input, and a
+markdown front end had nothing to be diffed against: this project contains
+zero `.md` files. So one is borrowed — `make corpus`:
+
+```
+  commonmark    652   spec 0.31.2      (CC-BY-SA 4.0, via third_party/md4c)
+  ext-*         213   md4c's own extension specs, 16 of them
+  gfm            39   spec 0.29        (CC-BY-SA 4.0, github/cmark-gfm)
+  real          486   documents found on this machine
+
+  1390 documents, 13.2 MB → build/corpus/
+```
+
+Three kinds of source because they fail differently. **Spec examples** are
+dense in the corners a hand-written parser gets wrong — lazy continuation,
+link reference definitions, HTML blocks, tight and loose lists. **Extension
+specs** are where md4c and remark-gfm may simply disagree, which is worth
+knowing. **Real documents** are neither: long, mundane, and full of what no
+spec example bothers with. The GFM spec contributes only 39 because it is a
+superset of CommonMark and the rest deduplicate.
+
+Nothing is committed — the corpus is build output, and the spec files stay
+inside md4c's own vendored copy with their licence.
+
+Two baselines are established before a line of the front end is written:
+
+```
+make check-markdown   1390 documents, 290051 hast nodes in 10.9 s, remark
+                      refusing none — the reference to be measured against
+build/md4cprobe       md4c reads 1390/1390: 68591 blocks, 42286 spans,
+                      483296 text runs, 12.2 MB of text, refusing none
+```
+
+`make check-markdown TOOL=<binary>` compares trees once there is something to
+compare — trees rather than HTML, because what a `.md` document becomes is a
+tree that composition and `transform` then work on.
+
 ## The other direction: hast to HTML
 
 ```c

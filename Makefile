@@ -6,6 +6,8 @@
 #   make check-html diff the HTML writer against hast-util-to-html
 #   make check-script diff the script compiler against compileScript
 #   make check-yaml   read every YAML block the project holds, and compare
+#   make corpus       assemble the borrowed markdown corpus
+#   make check-markdown  the markdown front end against remark
 #   make bench      how long each takes on the same input
 #
 # See README.md for what this is for and docs/ARCHITECTURE.md for how it works.
@@ -13,6 +15,12 @@
 CC      ?= cc
 AR      ?= ar
 CFLAGS  += -std=c11 -Wall -Wextra -Wshadow -O2 -g -Iinclude -Isrc -Ithird_party/baru-re/include
+
+# md4c — CommonMark + GFM in C, MIT, vendored at third_party/md4c. Not part of
+# the library yet: the front end that turns its callbacks into a hast tree is
+# the next piece of work, and build/md4cprobe is the check that comes first.
+MD4C_INC := -Ithird_party/md4c/src
+MD4C_SRCS := third_party/md4c/src/md4c.c
 
 SRCS := src/arena.c src/ast.c src/attrs.c src/unicode.c src/linkify.c src/emoji.c src/footnote.c src/inline.c src/block.c src/html.c src/script.c src/yaml.c src/data.c
 OBJS := $(patsubst src/%.c,build/%.o,$(SRCS))
@@ -60,6 +68,11 @@ build/html: test/html.c build/libmdyast.a
 	@mkdir -p build
 	$(CC) $(CFLAGS) test/html.c build/libmdyast.a -o $@
 
+# Does md4c read the borrowed corpus at all? The check before the front end.
+build/md4cprobe: test/md4cprobe.c $(MD4C_SRCS)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(MD4C_INC) test/md4cprobe.c $(MD4C_SRCS) -o $@
+
 # ```data fences, on constructed cases — this project has none.
 build/data: test/data.c build/libmdyast.a
 	@mkdir -p build
@@ -82,6 +95,18 @@ build/yamlcat: test/yamlcat.c build/libmdyast.a
 
 # And YAML: every front matter block, ```data fence and .yaml file the project
 # holds, read here and by the `yaml` package, compared as JSON.
+# A markdown corpus, borrowed — the CommonMark and GFM specs, md4c's own
+# extension specs, and whatever real .md files are on this machine. Nothing is
+# committed; see scripts/build-corpus.mjs for provenance and licences.
+.PHONY: corpus check-markdown
+corpus:
+	@node scripts/build-corpus.mjs --roots "$(SITE)/.."
+
+# The reference side alone until there is a C front end to point at with
+# --tool: how much of the corpus remark reads, and what it costs.
+check-markdown:
+	@node test/compare-markdown.mjs --mdy-docs "$(MDY_DOCS)" $(if $(TOOL),--tool "$(TOOL)")
+
 .PHONY: check-yaml
 check-yaml: build/yamlcat
 	@node test/compare-yaml.mjs --mdy-docs "$(MDY_DOCS)" --corpus "$(SITE)" --corpus "$(THEME)"
