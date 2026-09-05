@@ -412,6 +412,43 @@ int main(void) {
     check("a fence interrupts a paragraph", "text\n```\ncode\n```",
           ROOT(EL("p", "", TX("text")) "," EL("pre", "", EL("code", "", TX("code\\n")))), &o);
 
+    printf("--- mdyast: links, tags and arrows ---\n");
+    /* An arrow may not stand against another character the table draws with,
+     * so nothing inside `<--->` is one. */
+    check("a longer run is left alone", "---> and <--- and <===> and <---->",
+          ROOT(EL("p", "", TX("---> and <--- and <===> and <---->"))), &o);
+    /* linkify-it's normalize() puts `mailto:` in front of a bare email: the
+     * link SAYS what was written and POINTS at the normalised url. */
+    check("a bare email links through mailto:", "mail me a@b.com",
+          ROOT(EL("p", "", TX("mail me ") "," EL("a", "\"href\":\"mailto:a@b.com\"", TX("a@b.com")))), &o);
+    /* `setting.href + encodeURIComponent(name)` — the label keeps its case
+     * and its characters, the href is encoded. */
+    check("a tag name is percent-encoded in the href", "#caf\xc3\xa9",
+          ROOT(EL("p", "", EL("a", "\"href\":\"/tags/caf%C3%A9\"", TX("#caf\xc3\xa9")))), &o);
+    /* `href.toLowerCase().replace(/\\s+/g, '-')`, and only for a page of
+     * ours — somebody else's URL is theirs, case and all. */
+    check("a page link is lower cased with spaces as dashes",
+          "[[ x | /docs/API Reference ]]",
+          ROOT(EL("p", "", EL("a", "\"href\":\"/docs/api-reference\"", TX("x")))), &o);
+    check("…a relative step upward is still a page", "[[ x | ../Up One ]]",
+          ROOT(EL("p", "", EL("a", "\"href\":\"../up-one\"", TX("x")))), &o);
+    check("…and somebody else's URL is left as written",
+          "[[ x | https://Example.COM/Path ]]",
+          ROOT(EL("p", "", EL("a", "\"href\":\"https://Example.COM/Path\"", TX("x")))), &o);
+    check("a wiki link follows the schema for protocols",
+          "[[ x | javascript:alert(1) ]]",
+          ROOT(EL("p", "", EL("a", "", TX("x")))), &o);
+
+    printf("--- mdyast: indentation and underlines ---\n");
+    /* `width += tabSize - (width % tabSize)` with tabSize 4 — a tab runs to
+     * the next tab stop, so one tab is a full indent level. */
+    check("a tab counts to the next four-column stop", "a\n\thello",
+          ROOT(EL("p", "", TX("a")) ","
+               EL("div", "", TX("\\n") "," EL("div", "", TX("\\n") "," EL("p", "", TX("hello")) "," TX("\\n")) "," TX("\\n"))), &o);
+    /* `^(?:(=+)|(-{4,}))[ \t]*$` — trailing whitespace is decoration. */
+    check("a setext underline tolerates trailing whitespace", "Title\n=====  ",
+          ROOT(EL("h1", "\"id\":\"title\"", TX("Title"))), &o);
+
     printf("--- mdyast: the sanitize schema ---\n");
     /* Two rules, not one. A tag in `strip` disappears with its content; a tag
      * merely absent from the allowed list becomes a <div> and KEEPS it. */

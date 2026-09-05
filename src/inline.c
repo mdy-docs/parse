@@ -50,6 +50,91 @@ static const Marker *marker_at(const char *p, size_t left) {
     return NULL;
 }
 
+/*
+ * `linkKind(href) === 'page'`.
+ *
+ * Three answers and only the third is ours: `#` opens a fragment on this
+ * page, `//host` or a `^[a-z][a-z0-9+.-]*:` scheme is somebody else's, and
+ * everything left — a path, a name, a relative step upward — is a page.
+ */
+static int link_kind_page(const char *s, size_t len) {
+    if (len == 0) return 0;
+    if (s[0] == '#') return 0;
+    if (len >= 2 && s[0] == '/' && s[1] == '/') return 0;
+    if ((s[0] >= 'a' && s[0] <= 'z') || (s[0] >= 'A' && s[0] <= 'Z')) {
+        size_t i = 1;
+        while (i < len) {
+            char c = s[i];
+            int ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                     (c >= '0' && c <= '9') || c == '+' || c == '.' || c == '-';
+            if (!ok) break;
+            i++;
+        }
+        if (i < len && s[i] == ':') return 0;
+    }
+    return 1;
+}
+
+/*
+ * `href.toLowerCase().replace(/\s+/g, '-')`.
+ *
+ * A page is a file somewhere in the end, and `Getting Started` and
+ * `getting-started` should not be two of them. The lowercasing is Unicode's,
+ * not ASCII's — the same rule the rest of this file uses.
+ */
+static size_t normalize_link(const char *s, size_t len, char *out, size_t cap) {
+    size_t o = 0;
+    size_t i = 0;
+    while (i < len && o + 8 < cap) {
+        uint32_t cp;
+        size_t w = mdy_utf8_decode(s + i, len - i, &cp);
+        if (mdy_is_js_space(cp)) {
+            /* A RUN of whitespace becomes one dash. */
+            while (i < len) {
+                uint32_t next;
+                size_t nw = mdy_utf8_decode(s + i, len - i, &next);
+                if (!mdy_is_js_space(next)) break;
+                i += nw;
+            }
+            out[o++] = '-';
+            continue;
+        }
+        o += mdy_utf8_encode(mdy_lower_cp(cp), out + o);
+        i += w;
+    }
+    out[o] = '\0';
+    return o;
+}
+
+/*
+ * `encodeURIComponent`, which is what a tag's href is built with.
+ *
+ * Unreserved by that function: A-Z a-z 0-9 and `-_.!~*'()`. Everything else
+ * is percent-encoded byte by byte, and since the input is already UTF-8 that
+ * is exactly the encoding it wants.
+ */
+static size_t encode_uri_component(const char *s, size_t len, char *out, size_t cap) {
+    static const char *HEX = "0123456789ABCDEF";
+    size_t o = 0;
+    for (size_t i = 0; i < len && o + 4 < cap; i++) {
+        unsigned char c = (unsigned char)s[i];
+        int plain = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                    (c >= '0' && c <= '9') || strchr("-_.!~*'()", c) != NULL;
+        if (plain) { out[o++] = (char)c; continue; }
+        out[o++] = '%';
+        out[o++] = HEX[c >> 4];
+        out[o++] = HEX[c & 15];
+    }
+    out[o] = '\0';
+    return o;
+}
+
+/* Every character the default arrow table draws with. An arrow standing
+ * against one of them is part of a longer run. */
+static int is_arrow_letter(char c) {
+    return c == '-' || c == '<' || c == '=' || c == '>';
+}
+
 /* ---- autolink ------------------------------------------------------------ */
 
 /*
@@ -76,6 +161,7 @@ static const Marker *marker_at(const char *p, size_t left) {
 
 typedef struct {
     size_t start, end;
+    int mailto;         /* a bare email, which the href writes `mailto:` in front of */
 } Span;
 
 typedef struct {
@@ -272,22 +358,41 @@ static void scan(Ctx *ctx, const char *text, size_t len) {
         {
             const char *drawn = NULL;
             size_t used = 0;
-            if (left >= 4 && memcmp(p, "<-->", 4) == 0)      { drawn = "\xe2\x86\x94"; used = 4; }
-            else if (left >= 4 && memcmp(p, "<==>", 4) == 0) { drawn = "\xe2\x87\x94"; used = 4; }
-            else if (left >= 3 && memcmp(p, "-->", 3) == 0)  { drawn = "\xe2\x86\x92"; used = 3; }
-            else if (left >= 3 && memcmp(p, "<--", 3) == 0)  { drawn = "\xe2\x86\x90"; used = 3; }
-            else if (left >= 3 && memcmp(p, "==>", 3) == 0)  { drawn = "\xe2\x87\x92"; used = 3; }
-            else if (left >= 3 && memcmp(p, "<==", 3) == 0)  { drawn = "\xe2\x87\x90"; used = 3; }
+            /*
+             * An arrow may not stand against another character the table
+             * DRAWS with — `-`, `<`, `=`, `>` — on either side, so nothing
+             * inside `<--->` is an arrow and `---->` stays four dashes and an
+             * angle. The longest sequence is tried first, and when the one
+             * that fits is hemmed in, none of the shorter ones is tried
+             * either: they are pieces of the same run.
+             */
+            if (is_arrow_letter(p[0]) && !(i > 0 && is_arrow_letter(text[i - 1]))) {
+                static const struct { const char *seq; size_t len; const char *draw; } ARROWS[] = {
+                    { "<-->", 4, "\xe2\x86\x94" },
+                    { "<==>", 4, "\xe2\x87\x94" },
+                    { "-->",  3, "\xe2\x86\x92" },
+                    { "<--",  3, "\xe2\x86\x90" },
+                    { "==>",  3, "\xe2\x87\x92" },
+                    { "<==",  3, "\xe2\x87\x90" },
+                };
+                for (size_t a = 0; a < sizeof ARROWS / sizeof ARROWS[0]; a++) {
+                    if (left < ARROWS[a].len || memcmp(p, ARROWS[a].seq, ARROWS[a].len) != 0) continue;
+                    if (left > ARROWS[a].len && is_arrow_letter(p[ARROWS[a].len])) break;
+                    drawn = ARROWS[a].draw;
+                    used = ARROWS[a].len;
+                    break;
+                }
+            }
             /* EXACTLY three dots. A longer run stays as it is — `108....9` is
              * a citation, not an ellipsis and a full stop — which means
              * looking behind as well as ahead, the same rule the em dash
              * needs. */
-            else if (left >= 3 && p[0] == '.' && p[1] == '.' && p[2] == '.' &&
+            if (!drawn && left >= 3 && p[0] == '.' && p[1] == '.' && p[2] == '.' &&
                      !(left >= 4 && p[3] == '.') && !(i > 0 && text[i - 1] == '.')) {
                 drawn = "\xe2\x80\xa6";
                 used = 3;
             }
-            else if (left >= 2 && p[0] == '-' && p[1] == '-' &&
+            else if (!drawn && left >= 2 && p[0] == '-' && p[1] == '-' &&
                      !(left >= 3 && p[2] == '-') && !(i > 0 && text[i - 1] == '-')) {
                 drawn = "\xe2\x80\x94";
                 used = 2;
@@ -347,10 +452,15 @@ static void scan(Ctx *ctx, const char *text, size_t len) {
             if (n > 1) {
                 flush(ctx);
                 mdy_node *a = mdy_new_element(ctx->doc, "a", 1);
-                char href[256];
-                snprintf(href, sizeof href, "%s%.*s", p[0] == '#' ? "/tags/" : "/users/",
-                         (int)(n - 1), p + 1);
-                mdy_set_string(ctx->doc, a, "href", href, strlen(href));
+                /* `setting.href + encodeURIComponent(name)` — the NAME is
+                 * percent-encoded, so `#café` points at `/tags/caf%C3%A9`
+                 * while still reading `#café`. */
+                char href[512];
+                const char *prefix = p[0] == '#' ? "/tags/" : "/users/";
+                size_t hl = strlen(prefix);
+                memcpy(href, prefix, hl);
+                hl += encode_uri_component(p + 1, n - 1, href + hl, sizeof href - hl);
+                mdy_set_string(ctx->doc, a, "href", href, hl);
                 mdy_append(a, mdy_new_text(ctx->doc, p, n));
                 mdy_append(ctx->parent, a);
                 ctx->at_boundary = 0;
@@ -363,13 +473,24 @@ static void scan(Ctx *ctx, const char *text, size_t len) {
          * once by the port, rather than the same question asked twice. */
         {
             size_t n = 0;
+            int mailto = 0;
             for (size_t k = 0; k < ctx->url_count; k++) {
-                if (ctx->urls[k].start == i) { n = ctx->urls[k].end - i; break; }
+                if (ctx->urls[k].start == i) { n = ctx->urls[k].end - i; mailto = ctx->urls[k].mailto; break; }
                 if (ctx->urls[k].start > i) break;
             }
             if (n > 0) {
                 flush(ctx);
                 mdy_node *a = mdy_new_element(ctx->doc, "a", 1);
+                /* The link SAYS what was written and POINTS at the normalised
+                 * url; the two differ only for a bare email address, where
+                 * linkify-it's normalize() supplies the `mailto:`. */
+                if (mailto) {
+                    char href[512];
+                    size_t take = n < sizeof href - 8 ? n : sizeof href - 8;
+                    memcpy(href, "mailto:", 7);
+                    memcpy(href + 7, p, take);
+                    mdy_set_string(ctx->doc, a, "href", href, take + 7);
+                } else
                 mdy_set_string(ctx->doc, a, "href", p, n);
                 mdy_append(a, mdy_new_text(ctx->doc, p, n));
                 mdy_append(ctx->parent, a);
@@ -399,6 +520,7 @@ void mdy_parse_inline(mdy_doc *doc, mdy_node *parent, const char *text, size_t l
         for (size_t k = 0; k < n; k++) {
             urls[url_count].start = found[k].start;
             urls[url_count].end = found[k].end;
+            urls[url_count].mailto = found[k].mailto;
             url_count++;
         }
     }
@@ -565,7 +687,22 @@ static size_t wiki_link(Ctx *ctx, const char *p, size_t left) {
 
     flush(ctx);
     mdy_node *a = mdy_new_element(ctx->doc, "a", 1);
-    mdy_set_string(ctx->doc, a, "href", target, target_len);
+    /*
+     * The href is dropped when it points somewhere the schema refuses,
+     * exactly as it would be on a hand-written <a> — and otherwise TIDIED,
+     * but only when it names a page of ours. Somebody else's URL is theirs,
+     * case and all, and a fragment names an id.
+     */
+    if (!ctx->doc->options.sanitize ||
+        mdy_protocol_allowed("href", target, target_len)) {
+        char tidy[1024];
+        if (link_kind_page(target, target_len) && target_len < sizeof tidy) {
+            size_t n = normalize_link(target, target_len, tidy, sizeof tidy);
+            mdy_set_string(ctx->doc, a, "href", tidy, n);
+        } else {
+            mdy_set_string(ctx->doc, a, "href", target, target_len);
+        }
+    }
 
     /*
      * The label is content in its own right, parsed with autolink ON so a URL

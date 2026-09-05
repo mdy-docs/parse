@@ -568,6 +568,7 @@ size_t mdy_find_links(const char *text, size_t len, mdy_link *out, size_t max) {
 
             out[found].start = i;
             out[found].end = pos + n;
+            out[found].mailto = 0;      /* an explicit `mailto:` is already there */
             found++;
             i = pos + n;
             goto next;
@@ -585,6 +586,7 @@ size_t mdy_find_links(const char *text, size_t len, mdy_link *out, size_t max) {
                 if (start < i && (start == 0 || !is_mail_atom((unsigned char)t.s[start - 1]))) {
                     out[found].start = start;
                     out[found].end = i + 1 + host;
+                    out[found].mailto = 1;   /* bare email: normalize() adds the scheme */
                     found++;
                     i = i + 1 + host;
                     continue;

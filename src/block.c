@@ -32,7 +32,8 @@ void mdy_options_default(mdy_options *out) {
 
 /* ---- lines --------------------------------------------------------------- */
 
-/** Split into lines, measuring indentation as we go. A tab is two columns,
+/** Split into lines, measuring indentation as we go. A tab runs to the next
+ * four-column tab stop,
  * matching the JavaScript's own "every two columns is one level". */
 static mdy_line *split_lines(mdy_doc *doc, const char *text, size_t len, size_t *count) {
     size_t n = 1;
@@ -55,9 +56,15 @@ static mdy_line *split_lines(mdy_doc *doc, const char *text, size_t len, size_t 
          * the start of the line, indentation and all. */
         line->units = (uint32_t)mdy_utf16_length(text + start, end - start);
 
+        /*
+         * `indentWidth`: a tab advances to the next TAB STOP, four columns
+         * apart — `width += tabSize - (width % tabSize)`. Counting it as a
+         * fixed two made one tab half an indent level, so a tab-indented
+         * block did not nest.
+         */
         size_t indent = 0, k = 0;
         while (k < line->len && (line->text[k] == ' ' || line->text[k] == '\t')) {
-            indent += line->text[k] == '\t' ? 2 : 1;
+            indent += line->text[k] == '\t' ? 4 - (indent % 4) : 1;
             k++;
         }
         line->indent = indent;
@@ -82,12 +89,6 @@ void mdy_set_position(mdy_node *node, const mdy_line *lines, size_t from, size_t
 
 /* ---- small helpers ------------------------------------------------------- */
 
-static int all_of(const mdy_line *l, char c) {
-    if (l->len == 0) return 0;
-    for (size_t i = 0; i < l->len; i++) if (l->text[i] != c) return 0;
-    return 1;
-}
-
 /*
  * `/^([-*_])(?:[ \t]*\1){2,}[ \t]*$/` — a thematic break.
  *
@@ -108,6 +109,16 @@ static int thematic_break(const mdy_line *l) {
     return seen >= 3;
 }
 
+/* A Setext underline: `least` or more of `c`, then optional whitespace. */
+static int underline_of(const mdy_line *l, char c, size_t least) {
+    size_t n = 0;
+    while (n < l->len && l->text[n] == c) n++;
+    if (n < least) return 0;
+    for (size_t k = n; k < l->len; k++)
+        if (l->text[k] != ' ' && l->text[k] != '\t') return 0;
+    return 1;
+}
+
 static size_t run_of(const mdy_line *l, char c) {
     size_t n = 0;
     while (n < l->len && l->text[n] == c) n++;
@@ -117,47 +128,6 @@ static size_t run_of(const mdy_line *l, char c) {
 /* JavaScript's notion of whitespace, not C's — see mdy_trim. */
 static void trim(const char **s, size_t *len) { mdy_trim(s, len); }
 
-/*
- * A heading's `id`, matching src/format.js's slugify: lowercase, runs of
- * anything that is not an ASCII letter or digit collapse to one hyphen, and
- * hyphens are trimmed from both ends.
- *
- * NOT Unicode-aware, and that is the JavaScript's behaviour rather than a
- * shortcut here: `Ašared` slugs to `a-ared` there too. Matching it exactly
- * matters more than improving it, because a heading's id is a URL that may
- * already be linked to.
- */
-static char *slugify(mdy_doc *doc, const char *s, size_t len) {
-    char *out = mdy_alloc(&doc->arena, len + 1);
-    if (!out) return NULL;
-    size_t o = 0;
-    int pending_hyphen = 0;
-    for (size_t i = 0; i < len;) {
-        /*
-         * slugify is `[^a-z0-9]+` -> `-` AFTER a lowercase, so it is genuinely
-         * ASCII-only — `Ašared` slugs to `a-ared` in the JavaScript too, and
-         * matching that matters more than improving it, because a heading's id
-         * is a URL somebody may already have linked to.
-         *
-         * Whole characters still, so a multi-byte one collapses to ONE hyphen
-         * rather than one per byte.
-         */
-        uint32_t cp;
-        size_t width = mdy_utf8_decode(s + i, len - i, &cp);
-        i += width;
-
-        uint32_t lowered = cp < 0x80 ? mdy_lower_cp(cp) : cp;
-        if ((lowered >= 'a' && lowered <= 'z') || (lowered >= '0' && lowered <= '9')) {
-            if (pending_hyphen && o) out[o++] = '-';
-            pending_hyphen = 0;
-            out[o++] = (char)lowered;
-        } else {
-            pending_hyphen = 1;
-        }
-    }
-    out[o] = '\0';
-    return out;
-}
 
 /*
  * Block children of an ELEMENT are separated by newline text nodes — `"\n" p
@@ -1336,8 +1306,10 @@ void mdy_parse_block(mdy_doc *doc, mdy_node *parent, const mdy_line *lines, size
         const mdy_line *under = j < count ? &lines[j] : NULL;
         int setext = 0;
         if (under && !under->blank && under->indent == base) {
-            if (all_of(under, '=')) setext = 1;
-            else if (all_of(under, '-') && under->len >= 4) setext = 2;
+            /* `^(?:(=+)|(-{4,}))[ \t]*$` — trailing whitespace is
+             * decoration on either form. */
+            if (underline_of(under, '=', 1)) setext = 1;
+            else if (underline_of(under, '-', 4)) setext = 2;
         }
 
         const char *probe = joined;

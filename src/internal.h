@@ -171,7 +171,13 @@ const char *mdy_resolve_slug(mdy_doc *doc, const char *s, size_t len, size_t *ou
 /* ---- links (src/linkify.c) ----------------------------------------------- */
 
 /* One autolinked span, as byte offsets into the text. */
-typedef struct { size_t start, end; } mdy_link;
+typedef struct {
+    size_t start, end;
+    /* linkify-it's `normalize()` puts `mailto:` in front of a bare email —
+     * `match.url` and `match.text` differ for exactly that one case, and the
+     * <a> takes the url while its label takes the text. */
+    int mailto;
+} mdy_link;
 
 /*
  * Every URL in `text`, in order — a port of linkify-it, which is what mdy-docs
