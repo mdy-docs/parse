@@ -1,7 +1,7 @@
 # mdyast
 
-The MDY front end in C: a document's script layer to JavaScript, its text to a
-hast tree, and the tree back out as HTML.
+The MDY front end in C: YAML, a document's script layer to JavaScript, its text
+to a hast tree, and the tree back out as HTML.
 
 An investigation that grew into most of a parser. It answers a specific
 question with running code rather than an estimate — *what would it take to
@@ -127,6 +127,7 @@ make test        # the C checks, no node needed
 make compare     # diff the PARSER against mdy-docs' JavaScript over a corpus
 make check-html  # diff the WRITER against hast-util-to-html
 make check-script # diff the SCRIPT layer against compileScript
+make check-yaml  # read every YAML block the project holds, and compare
 make check-links # diff the URL matching against linkify-it
 make bench       # how long each takes on the same input
 ```
@@ -162,6 +163,50 @@ JSON is the emitter that exists because it is what the comparison harness
 needs. A host embedding this would want its own — building QuickJS objects
 directly, or binjson for the WASM path — and the tree is deliberately
 independent of any of them.
+
+## YAML
+
+```c
+#include "mdyyaml.h"
+
+char error[256];
+mdy_yaml *doc = mdy_yaml_parse(text, len, error, sizeof error);
+if (!doc) fprintf(stderr, "%s\n", error);   /* `line 12: what went wrong` */
+const mdy_yaml_node *title = mdy_yaml_get(mdy_yaml_root(doc), "title");
+mdy_yaml_free(doc);
+```
+
+For a document's front matter, its ` ```data ` fences, and the `.yaml` files a
+site is built from. **YAML 1.2, core schema — correct rather than compatible.**
+Where an implementation and the specification disagree this follows the
+specification, and where a construct is not supported it says so with an error
+naming the line rather than guessing. A parser that silently mis-reads data is
+worse than one that refuses it: the data is what a site is built from.
+
+The one that decides real files here is `Yes`. YAML 1.1 made it a boolean; 1.2's
+core schema does not, and this corpus has `public-access: Yes` meaning the word.
+
+It reads block mappings and sequences (including a sequence at its key's own
+indent and the compact `- key: value` form), plain, single- and double-quoted
+scalars that fold across lines, literal and folded block scalars with chomping
+and explicit indentation, nested flow collections spanning lines, and comments.
+It refuses anchors, aliases, merge keys, tags, explicit keys, multiple
+documents and directives — none of which appears in the 179 YAML blocks
+surveyed before a line was written, and each of which is a feature to add
+rather than a corner to guess at.
+
+```
+make check-yaml   179/179 blocks read identically, 4.9 MB
+```
+
+`test/yaml.c` covers the language itself, construct by construct, and every
+refusal with the line it names.
+
+Two bugs were found by testing rather than by reading. A **mutation fuzz** —
+2,000 truncated and corrupted inputs through an AddressSanitizer build — found
+a block scalar with no content failing to advance the line cursor, which is not
+a wrong value but an unbounded loop. And a **duplicate key** was quietly
+replacing rather than failing, which the specification calls an error.
 
 ## The script layer: a document to JavaScript
 
