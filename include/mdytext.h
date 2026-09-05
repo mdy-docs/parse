@@ -28,8 +28,26 @@ int mdy_is_letter_or_number_cp(uint32_t cp);
  * several — `İ` (U+0130) is `i` followed by a combining dot above. The simple
  * mapping gives the `i` and not the dot, which agrees wherever a caller only
  * asks whether a character folds to a particular letter. A caller reproducing
- * `String.prototype.toLowerCase` exactly needs more than this. */
+ * `String.prototype.toLowerCase` exactly wants mdy_lower_full. */
 uint32_t mdy_lower_cp(uint32_t cp);
+
+/*
+ * `String.prototype.toLowerCase` on one code point: writes 1 or 2 code points
+ * into `out` and returns how many.
+ *
+ * Exactly ONE code point in all of Unicode lowercases to more than one —
+ * U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE, which becomes `i` and a
+ * combining dot above (checked against a JavaScript engine over the whole
+ * code space, not assumed). The dot matters: it is not a letter, so text
+ * split on letter runs breaks THERE, and a host using the simple mapping
+ * silently joins two words into one.
+ *
+ * Not handled, because neither depends on a code point alone: Final_Sigma
+ * (Σ at the end of a word is ς, not σ) and the locale-sensitive Turkish and
+ * Lithuanian rules, which `toLowerCase` does not apply either — they belong
+ * to `toLocaleLowerCase`.
+ */
+size_t mdy_lower_full(uint32_t cp, uint32_t out[2]);
 
 /* Whitespace as JavaScript means it — `String.trim` removes no-break spaces
  * and the Unicode separators, and an ASCII-only trim leaves them in. */

@@ -85,6 +85,18 @@ uint32_t mdy_lower_cp(uint32_t cp) {
     return cp;
 }
 
+size_t mdy_lower_full(uint32_t cp, uint32_t out[2]) {
+    /* SpecialCasing.txt's only UNCONDITIONAL multi-character lowercase
+     * mapping. Everything else is one to one. */
+    if (cp == 0x0130) {
+        out[0] = 0x0069;   /* i */
+        out[1] = 0x0307;   /* combining dot above */
+        return 2;
+    }
+    out[0] = mdy_lower_cp(cp);
+    return 1;
+}
+
 /* ---- UTF-8 --------------------------------------------------------------- */
 
 /*
