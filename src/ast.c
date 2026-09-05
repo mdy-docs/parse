@@ -188,6 +188,19 @@ static int emit(Out *o, const mdy_node *n) {
         case MDY_DOCTYPE:
             return out_str(o, "{\"type\":\"doctype\"}");
 
+        /* Neither is produced by this parser — see mdy_node_type — but the
+         * tree model can hold them, so the emitter has to be able to write
+         * them or a tree that round-trips through JSON would lose them. */
+        case MDY_COMMENT:
+            if (out_str(o, "{\"type\":\"comment\",\"value\":") < 0) return -1;
+            if (out_json_string(o, n->text ? n->text : "") < 0) return -1;
+            return out_put(o, "}", 1);
+
+        case MDY_RAW:
+            if (out_str(o, "{\"type\":\"raw\",\"value\":") < 0) return -1;
+            if (out_json_string(o, n->text ? n->text : "") < 0) return -1;
+            return out_put(o, "}", 1);
+
         case MDY_ROOT:
             if (out_str(o, "{\"type\":\"root\",\"children\":[") < 0) return -1;
             break;

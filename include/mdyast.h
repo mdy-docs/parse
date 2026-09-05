@@ -52,6 +52,15 @@ typedef enum {
      * Measuring the wrong population is its own kind of assumption.
      */
     MDY_DOCTYPE,
+    /*
+     * Two hast types this PARSER never produces and the WRITER must still be
+     * able to serialise, because a tree reaching src/html.c may have been
+     * built by anything — a transform, another front end, a host embedding
+     * this. A tree model that cannot hold what hast holds forces its writer to
+     * refuse trees that are perfectly valid.
+     */
+    MDY_COMMENT,
+    MDY_RAW,
 } mdy_node_type;
 
 /*

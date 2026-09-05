@@ -418,12 +418,34 @@ int main(void) {
           ROOT(EL("p", "", TX("a _http:") "," EL("em", "", TX("x.com b")))), &o);
 
     printf("--- mdyast: doctype ---\n");
-    /* A fourth node type, and one a scan of the corpus's DOCUMENTS misses —
-     * a doctype only appears in a site's LAYOUTS. */
-    check("<!doctype html> is its own node", "<!doctype html>",
-          ROOT("{\"type\":\"doctype\"}"), &o);
-    check("…case-insensitively", "<!DOCTYPE html>",
-          ROOT("{\"type\":\"doctype\"}"), &o);
+    /*
+     * A fourth node type, and one a scan of the corpus's DOCUMENTS misses —
+     * a doctype only appears in a site's LAYOUTS. Which is also why the two
+     * checks below were wrong for a while: they asserted, with sanitizing ON,
+     * that the doctype survives. It does not, and no corpus document could
+     * have said so.
+     *
+     * `/^<!doctype\b[^>]*>?[ \t]*$/i`, and DROPPED when sanitizing: that mode
+     * is for input somebody else wrote, and a fragment has no business
+     * declaring what kind of document it is in.
+     */
+    {
+        mdy_options raw = o;
+        raw.sanitize = 0;
+        check("<!doctype html> is its own node", "<!doctype html>",
+              ROOT("{\"type\":\"doctype\"}"), &raw);
+        check("…case-insensitively, and with trailing space", "<!DOCTYPE html>  ",
+              ROOT("{\"type\":\"doctype\"}"), &raw);
+        /* `\b` — a word character after `doctype` means this is not one, and
+         * the ordinary element rule takes the line instead. */
+        check("…but a word against it is not a doctype", "<!doctypefoo>",
+              ROOT(EL("div", "\"doctypefoo\":true", "")), &raw);
+        /* `[^>]*>?[ \t]*$` — nothing may follow the `>` but whitespace. */
+        check("…nor is anything written after the `>`", "<!doctype html> x",
+              ROOT(EL("div", "\"doctype\":true,\"html\":true", TX("x"))), &raw);
+    }
+    check("a doctype is dropped when sanitizing, line and all", "<!doctype html>",
+          ROOT(""), &o);
     /* A comment is NOT special — the ordinary element rule handles it, and
      * the JavaScript agrees. Its `a` and `comment` read as boolean attributes,
      * which the schema then drops; with sanitize off they survive. */

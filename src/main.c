@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "mdyast.h"
+#include "mdyhtml.h"
 
 static char *read_all(FILE *f, size_t *len) {
     size_t cap = 1 << 16, used = 0;
@@ -30,7 +31,7 @@ static char *read_all(FILE *f, size_t *len) {
     return buf;
 }
 
-static int emit_file(const char *path, const mdy_options *options, int stats, int messages) {
+static int emit_file(const char *path, const mdy_options *options, int stats, int messages, int html) {
     FILE *f = path ? fopen(path, "rb") : stdin;
     if (!f) { fprintf(stderr, "mdyast: cannot read %s\n", path); return 1; }
     size_t len = 0;
@@ -66,6 +67,12 @@ static int emit_file(const char *path, const mdy_options *options, int stats, in
                 printf("%s\n", m->reason);
             }
         }
+    } else if (html) {
+        /* The tree as HTML, which is what src/html.c is for. Kept beside the
+         * JSON rather than in a tool of its own so the comparison harness can
+         * ask one binary for both. */
+        char *out = mdy_to_html(mdy_root(doc), NULL);
+        if (out) { fputs(out, stdout); free(out); }
     } else if (stats) {
         printf("%s\t%zu bytes of source\t%zu bytes of tree\n",
                path ? path : "(stdin)", len, mdy_bytes(doc));
@@ -82,6 +89,7 @@ int main(int argc, char **argv) {
     mdy_options_default(&options);
     int stats = 0;
     int messages = 0;
+    int html = 0;
     int files = 0, rc = 0;
 
     for (int i = 1; i < argc; i++) {
@@ -92,13 +100,14 @@ int main(int argc, char **argv) {
         if (strcmp(a, "--no-sanitize") == 0) { options.sanitize = 0; continue; }
         if (strcmp(a, "--stats") == 0) { stats = 1; continue; }
         if (strcmp(a, "--messages") == 0) { messages = 1; continue; }
+        if (strcmp(a, "--html") == 0) { html = 1; continue; }
         if (a[0] == '-' && a[1] == '-') {
             fprintf(stderr, "mdyast: unknown option %s\n", a);
             return 2;
         }
-        rc |= emit_file(a, &options, stats, messages);
+        rc |= emit_file(a, &options, stats, messages, html);
         files++;
     }
-    if (files == 0) rc |= emit_file(NULL, &options, stats, messages);
+    if (files == 0) rc |= emit_file(NULL, &options, stats, messages, html);
     return rc;
 }

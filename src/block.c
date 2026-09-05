@@ -541,18 +541,39 @@ static void parse_attributes(mdy_doc *doc, mdy_node *el, const char *tag,
     }
 }
 
-/** Consume an element opener at line `i`; returns the next line to read. */
-/** Case-insensitive prefix test. */
-static int starts_ci(const mdy_line *l, size_t at, const char *want) {
-    size_t n = strlen(want);
-    if (at + n > l->len) return 0;
+/*
+ * `/^<!doctype\b[^>]*>?[ \t]*$/i` — the one line of an HTML document that is
+ * not an element.
+ *
+ * The whole line has to match, which is what a prefix test misses: `\b` after
+ * `doctype` means `<!doctypefoo>` is not one, `[^>]*` means a `>` may appear
+ * only at the end, and what follows it may be whitespace and nothing else.
+ */
+static int doctype_line(const mdy_line *l) {
+    static const char PREFIX[] = "<!doctype";
+    size_t n = sizeof PREFIX - 1;
+    if (l->len < n) return 0;
     for (size_t k = 0; k < n; k++) {
-        char c = l->text[at + k];
+        char c = l->text[k];
         if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-        if (c != want[k]) return 0;
+        if (c != PREFIX[k]) return 0;
     }
+    /* `\b`: what follows `doctype` may not be a word character. */
+    if (l->len > n) {
+        char c = l->text[n];
+        int word = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                   (c >= '0' && c <= '9') || c == '_';
+        if (word) return 0;
+    }
+    size_t i = n;
+    while (i < l->len && l->text[i] != '>') i++;
+    if (i < l->len) i++;                    /* the optional `>` */
+    for (size_t k = i; k < l->len; k++)
+        if (l->text[k] != ' ' && l->text[k] != '\t') return 0;
     return 1;
 }
+
+/** Consume an element opener at line `i`; returns the next line to read. */
 
 /*
  * The disabled checkbox at the head of a task item, and the space that
@@ -733,13 +754,21 @@ static size_t parse_element(mdy_doc *doc, mdy_node *parent,
      * boolean attributes, which is what the ordinary element rule below does
      * with it and what the JavaScript does too.
      */
-    if (starts_ci(l, 1, "!doctype")) {
-        mdy_node *dt = mdy_alloc(&doc->arena, sizeof *dt);
-        if (dt) {
-            memset(dt, 0, sizeof *dt);
-            dt->type = MDY_DOCTYPE;
-            separate(doc, parent);
-            mdy_append(parent, dt);
+    if (doctype_line(l)) {
+        /*
+         * DROPPED when sanitizing, and that is not an oversight in the
+         * JavaScript: sanitizing is the mode for input somebody else wrote,
+         * and a fragment has no business declaring what kind of document it
+         * is in. The line is still consumed either way.
+         */
+        if (!doc->options.sanitize) {
+            mdy_node *dt = mdy_alloc(&doc->arena, sizeof *dt);
+            if (dt) {
+                memset(dt, 0, sizeof *dt);
+                dt->type = MDY_DOCTYPE;
+                separate(doc, parent);
+                mdy_append(parent, dt);
+            }
         }
         return i + 1;
     }

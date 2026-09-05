@@ -1,6 +1,6 @@
 # mdyast
 
-MDY document text to a hast tree, in C.
+MDY document text to a hast tree, in C — and the tree back out as HTML.
 
 An investigation that grew into most of a parser. It answers a specific
 question with running code rather than an estimate — *what would it take to
@@ -121,13 +121,15 @@ and the harness is as much the point of this repo as the parser is.
 ## Build
 
 ```sh
-make            # the library and the CLI
-make test       # 20 checks, no node needed
-make compare    # diff against mdy-docs' JavaScript over a real corpus
-make bench      # how long each takes on the same input
+make             # the library and the CLI
+make test        # the C checks, no node needed
+make compare     # diff the PARSER against mdy-docs' JavaScript over a corpus
+make check-html  # diff the WRITER against hast-util-to-html
+make check-links # diff the URL matching against linkify-it
+make bench       # how long each takes on the same input
 ```
 
-`make compare` and `make bench` need mdy-docs and a corpus:
+The `compare`/`check-*` targets need mdy-docs and a corpus:
 
 ```sh
 make compare MDY_DOCS=~/projects/mdy-wikipedia-web/third-party/mdy-docs \
@@ -158,6 +160,43 @@ JSON is the emitter that exists because it is what the comparison harness
 needs. A host embedding this would want its own — building QuickJS objects
 directly, or binjson for the WASM path — and the tree is deliberately
 independent of any of them.
+
+## The other direction: hast to HTML
+
+```c
+#include "mdyhtml.h"
+
+char *html = mdy_to_html(mdy_root(doc), NULL);   /* NULL: mdy-docs' own settings */
+free(html);
+```
+
+A port of [`hast-util-to-html`](https://github.com/syntax-tree/hast-util-to-html),
+which is what mdy-docs writes its pages with — through `rehype-stringify`, with
+`allowDangerousHtml: true` and every other option at its default.
+
+**It shares nothing with the parser but the tree type.** The parser reads text
+and produces a tree; `src/html.c` reads a tree and produces text; neither needs
+the other. `test/html.c` proves it: every case there builds its tree from
+plain C structs, with no arena, no document and no source text anywhere — 24
+checks and not one of them parses anything.
+
+`make check-html` is the differential harness, and it is careful about what it
+is measuring. Comparing two whole pipelines would blame the writer for a
+parser difference, so the SAME TREE goes through both: the C parses, emits its
+tree as JSON, and writes its own HTML; node reads that JSON and writes HTML
+from it with the original. A difference has nowhere else to have come from. A
+second pass then compares end to end, which is the number an embedder cares
+about. Both run over every document twice, sanitised and not.
+
+```
+290/290 trees written identically — the same tree through both writers
+290/290 documents identical end to end, over 26 MB of HTML
+```
+
+Three options are deliberately absent, and `include/mdyhtml.h` says so at
+length: `omitOptionalTags` (off in mdy-docs, and the largest part of the
+original), the SVG schema, and `<template>`'s `content`. Each is a refusal to
+guess rather than an oversight.
 
 ## Notes
 
