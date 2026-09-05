@@ -1373,19 +1373,35 @@ mdy_doc *mdy_parse(const char *text, size_t len, const mdy_options *options) {
 
     size_t count = 0;
     mdy_line *lines = split_lines(doc, text, len, &count);
-    strip_comments(lines, &count);
 
     doc->root = mdy_alloc(&doc->arena, sizeof *doc->root);
     if (!doc->root) { mdy_free(doc); return NULL; }
     memset(doc->root, 0, sizeof *doc->root);
     doc->root->type = MDY_ROOT;
 
+    /*
+     * ORDER, and it is observable: front matter comes off FIRST, and comments
+     * only after it.
+     *
+     * Stripping first looks harmless and is not. A `#` line above the fence
+     * stops the fence being the top of the document, so there is no front
+     * matter and the whole thing is a paragraph — strip it first and the
+     * fence floats up and the document acquires front matter it does not
+     * have. And a `#` line INSIDE the block is YAML's own comment, which is
+     * the front matter's business rather than the grammar's.
+     *
+     * This is src/parse/block.js's sequence: extractMatter, then the code,
+     * then stripComments, then the lines are measured. The code is the one
+     * step this parser does not have — see shims/parse.js.
+     */
     size_t start = 0;
     if (doc->options.frontmatter) start = front_matter_lines(lines, count);
 
     if (!doc->options.documents) {
-        collect_definitions(doc, lines + start, count - start);
-        mdy_parse_block(doc, doc->root, lines + start, count - start, 0);
+        size_t body = count - start;
+        strip_comments(lines + start, &body);
+        collect_definitions(doc, lines + start, body);
+        mdy_parse_block(doc, doc->root, lines + start, body, 0);
         mdy_footnote_section(doc, doc->root);
         return doc;
     }
@@ -1408,8 +1424,13 @@ mdy_doc *mdy_parse(const char *text, size_t len, const mdy_options *options) {
          * an id or a numbering run. */
         doc->note_count = 0;
         doc->next_number = 0;
-        collect_definitions(doc, lines + section_start, i - section_start);
-        mdy_parse_block(doc, article, lines + section_start, i - section_start, 0);
+        /* Per document, and after its own front matter — see the note above.
+         * Compacting inside [section_start, i) leaves the lines beyond `i`
+         * where the scan above still expects them. */
+        size_t body = i - section_start;
+        strip_comments(lines + section_start, &body);
+        collect_definitions(doc, lines + section_start, body);
+        mdy_parse_block(doc, article, lines + section_start, body, 0);
         mdy_footnote_section(doc, article);
         mdy_append(doc->root, article);
         from = i + 1;

@@ -95,6 +95,23 @@ int main(void) {
                EL("article", "", TX("\\n") "," EL("p", "", TX("two")) "," TX("\\n"))), &o);
     o.documents = 0;
 
+    /*
+     * Front matter comes off BEFORE comments do, and the order is observable:
+     * a `#` above the fence stops the fence being the top of the document, so
+     * there is no front matter at all. Stripping first floats the fence up and
+     * invents some.
+     */
+    {
+        mdy_options fm = o;
+        fm.frontmatter = 1;
+        check("a comment above the fence is not front matter",
+              "# a comment above\n+++\ntitle: A\n+++\nbody",
+              ROOT(EL("p", "", TX("+++ title: A +++ body"))), &fm);
+        check("…and a # inside the block belongs to the YAML",
+              "+++\ntitle: A\n# a yaml comment\n+++\nbody",
+              ROOT(EL("p", "", TX("body"))), &fm);
+    }
+
     printf("--- mdyast: fences ---\n");
     check("a fence keeps its content verbatim", "```js\nlet x = 1\n```",
           ROOT(EL("pre", "", EL("code", "\"className\":[\"language-js\"]", TX("let x = 1\\n")))), &o);
